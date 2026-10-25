@@ -139,6 +139,44 @@ const hasSrc = () => !!mic || !!audio.src;
 const GONIO_N = 1024, tdL = new Float32Array(GONIO_N), tdR = new Float32Array(GONIO_N);
 const BASS_N = 4096, tdBass = new Float32Array(BASS_N), RING_M = 360, ringR = new Float32Array(RING_M).fill(1);
 
+// Continuous 2 s mono history of the analysis bus for pane A (the analyser only ever holds the last 170 ms).
+// A tiny AudioWorklet posts 1024-sample blocks; they're dropped while nothing is playing so the pane freezes on pause.
+const tap = { ready: false, buf: new Float32Array(1), wp: 0, sr: 48000 };
+const TAP_SRC = `class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.b = new Float32Array(1024); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0];
+    if (ch && ch.length) {
+      const l = ch[0], r = ch[1] || ch[0];
+      for (let i = 0; i < l.length; i++) {
+        this.b[this.n++] = (l[i] + r[i]) * 0.5;
+        if (this.n === 1024) { this.port.postMessage(this.b.slice(0)); this.n = 0; }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('beatscope-tap', Tap);`;
+async function startTap() {
+  if (!ac.audioWorklet) return;
+  try {
+    const url = URL.createObjectURL(new Blob([TAP_SRC], { type: 'text/javascript' }));
+    await ac.audioWorklet.addModule(url);
+    URL.revokeObjectURL(url);
+    const node = new AudioWorkletNode(ac, 'beatscope-tap');
+    const sink = ac.createGain(); sink.gain.value = 0;
+    bus.connect(node); node.connect(sink); sink.connect(ac.destination);
+    tap.sr = ac.sampleRate; tap.buf = new Float32Array(Math.round(ac.sampleRate * 2)); tap.wp = 0;
+    node.port.onmessage = e => {
+      if (idle()) return;
+      const d = e.data, len = tap.buf.length;
+      for (let i = 0; i < d.length; i++) tap.buf[(tap.wp + i) % len] = d[i];
+      tap.wp = (tap.wp + d.length) % len;
+    };
+    tap.ready = true;
+  } catch (e) { /* stays on the analyser fallback */ }
+}
+
 function ensureAudio() {
   if (ac) return;
   ac = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
@@ -163,6 +201,7 @@ function ensureAudio() {
   bus.connect(split);
   anL = ac.createAnalyser(); anR = ac.createAnalyser();
   for (const [a, ch] of [[anL, 0], [anR, 1]]) { a.fftSize = GONIO_N; a.smoothingTimeConstant = 0; split.connect(a, ch); a.connect(mute); }
+  startTap();
 }
 
 let peaks = null, trackName = '', fileName = '', fileBpm = 0, objURL = null, loadToken = 0;
@@ -796,20 +835,32 @@ function drawTitle(t) {
   ctx.fillText(mic ? `(live ${fmt(t)})` : `(${fmt(t)} / ${fmt(audio.duration)})`, W / 2, L.title + fs * 0.95);
 }
 
-// pane A: the whole 8192-sample window squashed into columns, min/max in gray, rms band in white
+// pane A: the last ~1.5 s of raw waveform, one column per pixel, drawn like a dense line plot. Brightness comes from
+// how many times the wave crosses the column: a bass cycle a few px wide is a single pass (dim stroke, flat-topped
+// "comb teeth"), busy high-frequency stretches cross many times and fill solid white, like the reference.
+// Needs the continuous history from the tap worklet; until that's up it falls back to the analyser's 170 ms.
+const DENSE_S = 1.5;
 function drawDense() {
-  const { x, y, w, h } = L.a, mid = y + h / 2, amp = h / 2, g = st.gain, per = FFT / w;
-  const mm = new Path2D(), rb = new Path2D();
+  const { x, y, w, h } = L.a, mid = y + h / 2, amp = h / 2, g = st.gain;
+  const live = tap.ready, buf = live ? tap.buf : td, len = buf.length;
+  const N = live ? Math.min(len - 1, Math.round(tap.sr * DENSE_S)) : FFT, base = live ? tap.wp - N : 0, per = N / w;
+  const dim = new Path2D(), mid2 = new Path2D(), hot = new Path2D();
+  let prev = buf[((base - 1) % len + len) % len];
   for (let i = 0; i < w; i++) {
-    const s = Math.floor(i * per), e = Math.floor((i + 1) * per);
-    let mn = 1, mx = -1, sq = 0;
-    for (let j = s; j < e; j++) { const v = td[j]; if (v < mn) mn = v; if (v > mx) mx = v; sq += v * v; }
-    const top = clamp(mx * g), bot = clamp(mn * g), r = clamp(Math.sqrt(sq / (e - s)) * g * 1.5, 0, 1);
-    mm.rect(x + i, mid - top * amp, 1, Math.max(DPR, (top - bot) * amp));
-    rb.rect(x + i, mid - r * amp, 1, Math.max(DPR, r * 2 * amp));
+    const s0 = Math.floor(i * per), s1 = Math.max(s0 + 1, Math.floor((i + 1) * per));
+    let mn = 1, mx = -1, travel = 0;
+    for (let j = s0; j < s1; j++) {
+      const v = buf[((base + j) % len + len) % len];
+      if (v < mn) mn = v; if (v > mx) mx = v;
+      travel += Math.abs(v - prev); prev = v;
+    }
+    const top = clamp(mx * g), bot = clamp(mn * g), passes = travel / Math.max(1e-5, mx - mn);
+    const path = passes > 4 ? hot : passes > 1.8 ? mid2 : dim;
+    path.rect(x + i, mid - top * amp, 1, Math.max(DPR, (top - bot) * amp));
   }
-  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fill(mm);
-  ctx.fillStyle = '#fff'; ctx.fill(rb);
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill(dim);
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fill(mid2);
+  ctx.fillStyle = '#fff'; ctx.fill(hot);
 }
 
 // pane B: triggered oscilloscope with a soft fill to the centre line
