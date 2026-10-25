@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>beatscope</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --fg: #f2f2f2;
+    --dim: rgba(242, 242, 242, 0.5);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: var(--fg); overflow: hidden; }
+  body { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; -webkit-font-smoothing: antialiased; }
+  canvas#gl { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+
+  #empty {
+    position: fixed; inset: 0; display: grid; place-content: center; justify-items: center;
+    gap: 14px; text-align: center; pointer-events: none;
+    transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+  }
+  body.loaded #empty { opacity: 0; transform: scale(0.98); }
+  body.loaded #empty * { pointer-events: none !important; }
+  #empty h1 { margin: 0; font-weight: 500; font-size: 15px; letter-spacing: 0.08em; }
+  #empty p { margin: 0; font-size: 13px; color: var(--dim); }
+  #empty .tag { font-size: 22px; color: var(--fg); margin-bottom: 10px; }
+  button {
+    pointer-events: auto; font: inherit; font-size: 13px; color: #000; background: var(--fg);
+    border: 0; border-radius: 999px; padding: 10px 20px; cursor: pointer;
+    transition: transform 160ms var(--ease-out);
+  }
+  button:active { transform: scale(0.97); }
+
+  #drop {
+    position: fixed; inset: 12px; border: 1px dashed var(--dim); border-radius: 14px;
+    opacity: 0; pointer-events: none; transition: opacity 150ms var(--ease-out);
+  }
+  body.drag #drop { opacity: 1; }
+
+  #hud {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font-size: 11px; color: var(--dim); white-space: nowrap; letter-spacing: 0.02em;
+    transition: opacity 200ms var(--ease-out);
+  }
+  #hud b { color: var(--fg); font-weight: 500; }
+  body.idle #hud, body:not(.loaded) #hud { opacity: 0; }
+  body.idle { cursor: none; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="empty">
+  <h1>BEATSCOPE</h1>
+  <div class="tag">Every hit. On the line.</div>
+  <button id="pick">choose audio</button>
+  <p>or drop a file anywhere</p>
+</div>
+<div id="drop"></div>
+<div id="hud"><b>space</b> play &nbsp;·&nbsp; <b>← →</b> seek &nbsp;·&nbsp; <b>click bar</b> scrub &nbsp;·&nbsp; <b>I</b> inverts <span id="invState">on</span> &nbsp;·&nbsp; <b>G</b> glow &nbsp;·&nbsp; <b>F</b> fullscreen &nbsp;·&nbsp; <b>O</b> open</div>
+<input type="file" id="file" accept="audio/*,video/*" hidden>
+<audio id="audio" preload="auto"></audio>
+
+<script>
+const $ = s => document.querySelector(s);
+const glc = $('#gl'), audio = $('#audio');
+const cv = document.createElement('canvas');
+const ctx = cv.getContext('2d', { alpha: false });
+const FONT = '"IBM Plex Mono", ui-monospace, Menlo, monospace';
+const clamp = (v, a = -1, b = 1) => v < a ? a : v > b ? b : v;
+const ease = (dt, tau) => 1 - Math.exp(-dt / tau);
+
+// ---------- audio ----------
+const FFT = 8192, SCOPE_N = 2048;
+const td = new Float32Array(FFT), fd = new Float32Array(FFT / 2).fill(-140), lp = new Float32Array(FFT);
+let ac = null, an = null;
+
+function ensureAudio() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+  an = ac.createAnalyser();
+  an.fftSize = FFT;
+  an.smoothingTimeConstant = 0;
+  const src = ac.createMediaElementSource(audio);
+  src.connect(an);
+  an.connect(ac.destination);
+}
+
+let peaks = null, trackName = '', objURL = null, loadToken = 0;
+async function load(file) {
+  if (!file) return;
+  ensureAudio();
+  ac.resume();
+  const token = ++loadToken;
+  if (objURL) URL.revokeObjectURL(objURL);
+  objURL = URL.createObjectURL(file);
+  audio.src = objURL;
+  trackName = file.name.replace(/\.[^.]+$/, '');
+  peaks = null;
+  document.body.classList.add('loaded');
+  audio.play().catch(() => {});
+  try {
+    const ab = await ac.decodeAudioData(await file.arrayBuffer());
+    if (token === loadToken) peaks = computePeaks(ab, 2400);
+  } catch (e) { /* overview stays flat; playback still works */ }
+}
+
+function computePeaks(ab, n) {
+  const len = ab.length, chans = [];
+  for (let c = 0; c < ab.numberOfChannels; c++) chans.push(ab.getChannelData(c));
+  const out = new Float32Array(n), step = len / n;
+  let top = 0;
+  for (let i = 0; i < n; i++) {
+    const s = Math.floor(i * step), e = Math.min(len, Math.floor((i + 1) * step));
+    let m = 0;
+    for (const d of chans) for (let j = s; j < e; j += 3) { const v = Math.abs(d[j]); if (v > m) m = v; }
+    out[i] = m;
+    if (m > top) top = m;
+  }
+  if (top > 0) for (let i = 0; i < n; i++) out[i] /= top;
+  return out;
+}
+
+// audio.currentTime ticks coarsely in some browsers; extrapolate between ticks so the playhead glides
+const clk = { ct: 0, t: 0 };
+function playTime() {
+  const now = performance.now() / 1000, ct = audio.currentTime;
+  if (ct !== clk.ct || audio.paused) { clk.ct = ct; clk.t = now; return ct; }
+  return Math.min(ct + (now - clk.t) * audio.playbackRate, audio.duration || ct);
+}
+
+// ---------- analysis state ----------
+const st = {
+  gain: 2, peak: 0.3,
+  lowAvg: -40, lowPrev: -40, lastBeat: -1,
+  pulse: 0, invUntil: 0, flashes: true, glow: true,
+};
+let specS = null, specP = null, specCols = 0;
+
+function analyse(t, dt) {
+  if (an) { an.getFloatTimeDomainData(td); an.getFloatFrequencyData(fd); }
+  else for (let i = 0; i < FFT; i++) td[i] = Math.sin(i * 0.004 + t * 1.3) * 0.02 + (Math.random() - 0.5) * 0.004;
+
+  // AGC: fast attack, slow release so quiet tracks still fill the panes
+  let pk = 0;
+  for (let i = FFT - 4096; i < FFT; i++) { const v = Math.abs(td[i]); if (v > pk) pk = v; }
+  st.peak = pk > st.peak ? st.peak + (pk - st.peak) * ease(dt, 0.02) : st.peak + (pk - st.peak) * ease(dt, 2.5);
+  const target = clamp(0.92 / Math.max(st.peak, 0.02), 1, 8);
+  st.gain += (target - st.gain) * ease(dt, 0.25);
+
+  // kick detector on the 35–140 Hz band
+  const sr = ac ? ac.sampleRate : 48000, hz = sr / FFT;
+  let e = 0;
+  for (let b = Math.floor(35 / hz); b <= Math.ceil(140 / hz); b++) e += Math.pow(10, fd[b] / 10);
+  const le = 10 * Math.log10(e + 1e-14);
+  const rise = le - st.lowAvg;
+  if (!audio.paused && le > -70 && rise > 4.5 && le >= st.lowPrev && t - st.lastBeat > 0.17) {
+    st.lastBeat = t;
+    st.pulse = Math.min(1, 0.5 + rise / 14);
+    if (st.flashes && rise > 7.5) st.invUntil = t + 0.07;
+  }
+  st.lowPrev = le;
+  st.lowAvg += (le - st.lowAvg) * ease(dt, 0.45);
+  st.pulse *= Math.exp(-dt * 9);
+}
+
+// ---------- drawing ----------
+let W = 0, H = 0, DPR = 1;
+const L = {}; // layout in device pixels
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.floor(innerWidth * DPR); H = Math.floor(innerHeight * DPR);
+  cv.width = glc.width = W; cv.height = glc.height = H;
+  const gap = Math.round(W * 0.006);
+  L.ov = { x: Math.round(W * 0.03), y: Math.round(H * 0.09), w: Math.round(W * 0.94), h: Math.round(H * 0.13) };
+  L.title = H * 0.36;
+  const py = Math.round(H * 0.5), ph = Math.round(H * 0.42);
+  const wa = Math.round(W * 0.22), wb = Math.round(W * 0.43);
+  L.a = { x: 0, y: py, w: wa, h: ph };
+  L.b = { x: wa + gap, y: py, w: wb - gap, h: ph };
+  L.c = { x: wa + wb + gap, y: py, w: W - wa - wb - gap, h: ph };
+  specCols = L.c.w;
+  specS = new Float32Array(specCols).fill(-140);
+  specP = new Float32Array(specCols).fill(-140);
+  resizeGL();
+}
+
+const fmt = s => { s = Math.max(0, s || 0); return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`; };
+
+function drawOverview(t) {
+  const { x, y, w, h } = L.ov, mid = y + h / 2, dur = audio.duration || 0;
+  const frac = dur ? t / dur : 0, head = x + frac * w;
+
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x, y - 6 * DPR, w, DPR);
+  ctx.fillRect(x, y + h + 5 * DPR, w, DPR);
+
+  if (peaks) {
+    for (const played of [true, false]) {
+      ctx.fillStyle = played ? 'rgba(255,255,255,0.95)' : 'rgba(255,255,255,0.38)';
+      ctx.beginPath();
+      const from = played ? 0 : Math.floor(frac * w), to = played ? Math.floor(frac * w) : w;
+      for (let i = from; i < to; i++) {
+        const v = peaks[Math.floor(i / w * peaks.length)] * h * 0.5;
+        ctx.rect(x + i, mid - v, 1, Math.max(DPR, v * 2));
+      }
+      ctx.fill();
+    }
+  } else {
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fillRect(x, mid, w, DPR);
+  }
+  if (dur) { ctx.fillStyle = '#fff'; ctx.fillRect(head - DPR, y - 6 * DPR, 2 * DPR, h + 12 * DPR); }
+
+  ctx.font = `500 ${Math.round(H * 0.03)}px ${FONT}`;
+  ctx.textBaseline = 'bottom'; ctx.textAlign = 'left';
+  const cs = Math.floor((t % 1) * 100);
+  ctx.fillText(fmt(t), x, y - 14 * DPR);
+  const tw = ctx.measureText(fmt(t)).width;
+  ctx.font = `${Math.round(H * 0.015)}px ${FONT}`;
+  ctx.fillText(String(cs).padStart(2, '0'), x + tw + 3 * DPR, y - 16 * DPR);
+}
+
+function drawTitle(t) {
+  ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const fs = Math.round(Math.min(H * 0.034, W * 0.026));
+  ctx.font = `${fs}px ${FONT}`;
+  ctx.fillText(trackName || 'beatscope', W / 2, L.title);
+  ctx.fillText(`(${fmt(t)} / ${fmt(audio.duration)})`, W / 2, L.title + fs * 1.3);
+}
+
+// pane A: the whole 8192-sample window squashed into columns, min/max in gray, rms band in white
+function drawDense() {
+  const { x, y, w, h } = L.a, mid = y + h / 2, amp = h / 2, g = st.gain, per = FFT / w;
+  const mm = new Path2D(), rb = new Path2D();
+  for (let i = 0; i < w; i++) {
+    const s = Math.floor(i * per), e = Math.floor((i + 1) * per);
+    let mn = 1, mx = -1, sq = 0;
+    for (let j = s; j < e; j++) { const v = td[j]; if (v < mn) mn = v; if (v > mx) mx = v; sq += v * v; }
+    const top = clamp(mx * g), bot = clamp(mn * g), r = clamp(Math.sqrt(sq / (e - s)) * g * 1.5, 0, 1);
+    mm.rect(x + i, mid - top * amp, 1, Math.max(DPR, (top - bot) * amp));
+    rb.rect(x + i, mid - r * amp, 1, Math.max(DPR, r * 2 * amp));
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fill(mm);
+  ctx.fillStyle = '#fff'; ctx.fill(rb);
+}
+
+// pane B: triggered oscilloscope with a soft fill to the centre line
+function drawScope() {
+  const { x, y, w, h } = L.b, mid = y + h / 2, amp = h * 0.46, g = st.gain;
+  // one-pole lowpass for a jitter-free rising zero-crossing trigger
+  const lo = FFT - SCOPE_N - 2400;
+  let p = td[lo];
+  for (let i = lo; i < FFT; i++) { p += (td[i] - p) * 0.08; lp[i] = p; }
+  let start = FFT - SCOPE_N;
+  for (let i = FFT - SCOPE_N; i > lo + 1; i--) if (lp[i - 1] < 0 && lp[i] >= 0) { start = i; break; }
+
+  const path = new Path2D();
+  for (let px = 0; px <= w; px++) {
+    const f = start + px / w * (SCOPE_N - 1), i = Math.floor(f), fr = f - i;
+    const v = td[i] + (td[Math.min(i + 1, FFT - 1)] - td[i]) * fr;
+    const yy = mid - clamp(v * g, -1.05, 1.05) * amp;
+    px ? path.lineTo(x + px, yy) : path.moveTo(x, yy);
+  }
+  const fill = new Path2D(path);
+  fill.lineTo(x + w, mid); fill.lineTo(x, mid); fill.closePath();
+  ctx.fillStyle = 'rgba(255,255,255,0.17)'; ctx.fill(fill);
+  ctx.lineWidth = 2.2 * DPR; ctx.lineJoin = 'round'; ctx.strokeStyle = '#fff'; ctx.stroke(path);
+}
+
+const GRID = [];
+for (const dec of [10, 100, 1000, 10000]) for (let k = 1; k <= 9; k++) { const f = k * dec; if (f >= 20 && f <= 20000) GRID.push(f); }
+GRID.push(20000);
+const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const noteOf = f => { const m = Math.round(12 * Math.log2(f / 440) + 69); return NOTES[(m % 12 + 12) % 12] + (Math.floor(m / 12) - 1); };
+
+// pane C: log spectrum, smoothed curve + decaying peak-hold, decade grid, readout
+function drawSpectrum(dt) {
+  const { x, y, w, h } = L.c, sr = ac ? ac.sampleRate : 48000, hz = sr / FFT;
+  const fx = f => x + Math.log(f / 20) / Math.log(1000) * w;
+  const lift = 20 * Math.log10(st.gain) * 0.5, dbMin = -96, dbMax = -8;
+  const fy = db => y + h * (1 - clamp((db + lift - dbMin) / (dbMax - dbMin), 0, 1.02));
+  const att = ease(dt, 0.012), rel = ease(dt, 0.1);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  for (const f of GRID) ctx.fillRect(Math.round(fx(f)), y, DPR, h);
+
+  let best = -1e9, bestCol = 0;
+  for (let c = 0; c < specCols; c++) {
+    const f0 = 20 * Math.pow(1000, c / specCols), f1 = 20 * Math.pow(1000, (c + 1) / specCols);
+    const b0 = f0 / hz, b1 = f1 / hz;
+    let db;
+    if (b1 - b0 < 1) { const i = Math.floor(b0), fr = b0 - i; db = fd[i] + (fd[i + 1] - fd[i]) * fr; }
+    else { db = -200; for (let b = Math.floor(b0); b < Math.ceil(b1); b++) if (fd[b] > db) db = fd[b]; }
+    if (!isFinite(db)) db = -140;
+    const s = specS[c];
+    specS[c] = s + (db - s) * (db > s ? att : rel);
+    specP[c] = Math.max(specS[c], specP[c] - 22 * dt);
+    if (specS[c] > best) { best = specS[c]; bestCol = c; }
+  }
+
+  const curve = (arr, lw, style) => {
+    ctx.beginPath();
+    for (let c = 0; c < specCols; c++) { const yy = fy(arr[c]); c ? ctx.lineTo(x + c, yy) : ctx.moveTo(x, yy); }
+    ctx.lineWidth = lw; ctx.strokeStyle = style; ctx.stroke();
+  };
+  curve(specP, 1.2 * DPR, 'rgba(255,255,255,0.75)');
+  curve(specS, 2 * DPR, '#fff');
+
+  const fs = Math.round(Math.max(10 * DPR, h * 0.045));
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.font = `${Math.round(fs * 0.75)}px ${FONT}`;
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fillText('100Hz', fx(100) + 3 * DPR, y + 2 * DPR);
+  const bf = 20 * Math.pow(1000, (bestCol + 0.5) / specCols);
+  const label = `${(best + lift).toFixed(2)}dB | ${bf.toFixed(2)}Hz | ${noteOf(bf)}`;
+  ctx.font = `500 ${fs}px ${FONT}`;
+  const tw = ctx.measureText(label).width, ly = y + fs * 1.4;
+  const lx = Math.max(x + 4 * DPR, Math.min(x + w * 0.22, x + w - tw - 8 * DPR));
+  ctx.fillStyle = '#000'; ctx.fillRect(lx - 4 * DPR, ly - 2 * DPR, tw + 8 * DPR, fs + 4 * DPR);
+  ctx.fillStyle = '#fff'; ctx.fillText(label, lx, ly);
+}
+
+function draw(t, dt) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+  drawOverview(t);
+  drawTitle(t);
+  // panes punch in a hair on kicks
+  const z = 1 + 0.018 * st.pulse, cx = W / 2, cy = L.a.y + L.a.h / 2;
+  ctx.setTransform(z, 0, 0, z, cx - cx * z, cy - cy * z);
+  drawDense(); drawScope(); drawSpectrum(dt);
+}
+
+// ---------- webgl post: bloom, grain, slight lens, hard invert ----------
+const gl = glc.getContext('webgl2', { antialias: false, alpha: false, desynchronized: true, powerPreference: 'high-performance' });
+const VS = `#version 300 es
+out vec2 uv; void main(){ vec2 p=vec2((gl_VertexID<<1)&2, gl_VertexID&2); uv=p; gl_Position=vec4(p*2.-1.,0,1); }`;
+const HDR = `#version 300 es
+precision highp float; in vec2 uv; out vec4 o;`;
+const FS_DOWN = HDR + `uniform sampler2D t; uniform vec2 px;
+void main(){ o = 0.25*(texture(t,uv+px*vec2(-1,-1))+texture(t,uv+px*vec2(1,-1))+texture(t,uv+px*vec2(-1,1))+texture(t,uv+px*vec2(1,1))); }`;
+const FS_BLUR = HDR + `uniform sampler2D t; uniform vec2 d;
+void main(){ vec3 c=texture(t,uv).rgb*0.2270270;
+  c+=(texture(t,uv+d*1.3846154).rgb+texture(t,uv-d*1.3846154).rgb)*0.3162162;
+  c+=(texture(t,uv+d*3.2307692).rgb+texture(t,uv-d*3.2307692).rgb)*0.0702703; o=vec4(c,1); }`;
+const FS_FINAL = HDR + `uniform sampler2D base,b1,b2; uniform float time,inv,pulse,glow; uniform vec2 res;
+float hash(vec2 p){ p=fract(p*vec2(443.897,441.423)); p+=dot(p,p.yx+19.19); return fract((p.x+p.y)*p.x); }
+void main(){
+  vec2 c=uv-0.5; float r2=dot(c,c); vec2 q=0.5+c*(1.0+0.03*r2);
+  float l=0.0;
+  if(q.x>=0.0&&q.y>=0.0&&q.x<=1.0&&q.y<=1.0){
+    vec3 s=texture(base,q).rgb, g1=texture(b1,q).rgb, g2=texture(b2,q).rgb;
+    vec3 col=s*0.94 + glow*(g1*(0.5+0.4*pulse) + g2*(0.55+0.6*pulse));
+    l=dot(col,vec3(0.299,0.587,0.114));
+    l=1.0-exp(-l*2.4);
+  }
+  l=mix(l,1.0-l*0.92,inv);
+  l+=(hash(uv*res+fract(time*7.31)*917.0)-0.5)*0.055;
+  l*=1.0-r2*0.5*(1.0-0.7*inv);
+  o=vec4(vec3(l),1);
+}`;
+
+function prog(fs) {
+  const p = gl.createProgram();
+  for (const [type, src] of [[gl.VERTEX_SHADER, VS], [gl.FRAGMENT_SHADER, fs]]) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    gl.attachShader(p, s);
+  }
+  gl.linkProgram(p);
+  const u = {}, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const name = gl.getActiveUniform(p, i).name; u[name] = gl.getUniformLocation(p, name); }
+  return { p, u };
+}
+const P = gl && { down: prog(FS_DOWN), blur: prog(FS_BLUR), final: prog(FS_FINAL) };
+
+function makeTex(w, h) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  return t;
+}
+function target(w, h) {
+  const tex = makeTex(w, h), fb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return { tex, fb, w, h };
+}
+let src = null, R = null;
+function resizeGL() {
+  if (!gl) return;
+  if (R) for (const r of Object.values(R)) { gl.deleteTexture(r.tex); gl.deleteFramebuffer(r.fb); }
+  if (src) gl.deleteTexture(src);
+  src = makeTex(W, H);
+  const w4 = Math.max(1, W >> 2), h4 = Math.max(1, H >> 2), w8 = Math.max(1, W >> 3), h8 = Math.max(1, H >> 3);
+  R = { a4: target(w4, h4), b4: target(w4, h4), a8: target(w8, h8), b8: target(w8, h8) };
+}
+function pass(pr, out, tex, uniforms) {
+  gl.useProgram(pr.p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, out ? out.fb : null);
+  gl.viewport(0, 0, out ? out.w : W, out ? out.h : H);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
+  for (const [k, v] of Object.entries(uniforms)) v.length === 2 ? gl.uniform2f(pr.u[k], v[0], v[1]) : gl.uniform1f(pr.u[k], v);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function post(t, inv) {
+  gl.bindTexture(gl.TEXTURE_2D, src);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+  const { a4, b4, a8, b8 } = R;
+  pass(P.down, a4, src, { px: [1.5 / W, 1.5 / H] });
+  pass(P.blur, b4, a4.tex, { d: [1 / a4.w, 0] });
+  pass(P.blur, a4, b4.tex, { d: [0, 1 / a4.h] });
+  pass(P.down, a8, a4.tex, { px: [0.5 / a4.w, 0.5 / a4.h] });
+  for (let i = 0; i < 2; i++) {
+    pass(P.blur, b8, a8.tex, { d: [(1 + i) / a8.w, 0] });
+    pass(P.blur, a8, b8.tex, { d: [0, (1 + i) / a8.h] });
+  }
+  const f = P.final;
+  gl.useProgram(f.p);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, W, H);
+  [src, a4.tex, a8.tex].forEach((tx, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); });
+  gl.uniform1i(f.u.base, 0); gl.uniform1i(f.u.b1, 1); gl.uniform1i(f.u.b2, 2);
+  gl.uniform1f(f.u.time, t); gl.uniform1f(f.u.inv, inv); gl.uniform1f(f.u.pulse, st.pulse);
+  gl.uniform1f(f.u.glow, st.glow ? 1 : 0); gl.uniform2f(f.u.res, W, H);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+
+// ---------- loop ----------
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  const t = now / 1000;
+  analyse(t, dt);
+  draw(playTime(), dt);
+  const inv = t < st.invUntil ? 1 : 0;
+  if (gl) post(t, inv);
+  requestAnimationFrame(frame);
+}
+
+// without webgl, show the 2D canvas directly
+if (!gl) { glc.replaceWith(cv); cv.id = 'gl'; }
+
+// ---------- input ----------
+const fileIn = $('#file');
+$('#pick').onclick = () => fileIn.click();
+fileIn.onchange = () => { load(fileIn.files[0]); fileIn.value = ''; };
+
+let dragDepth = 0;
+addEventListener('dragenter', e => { e.preventDefault(); dragDepth++; document.body.classList.add('drag'); });
+addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('drag'); } });
+addEventListener('dragover', e => e.preventDefault());
+addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; document.body.classList.remove('drag');
+  const f = [...e.dataTransfer.files].find(f => /^(audio|video)\//.test(f.type)) || e.dataTransfer.files[0];
+  load(f);
+});
+
+function togglePlay() { if (!audio.src) return fileIn.click(); ac && ac.resume(); audio.paused ? audio.play() : audio.pause(); }
+let scrubbing = false;
+function scrubTo(e) {
+  const { x, w } = L.ov, px = e.clientX * DPR;
+  if (audio.duration) audio.currentTime = clamp((px - x) / w, 0, 1) * audio.duration;
+}
+glc.addEventListener('pointerdown', e => {
+  const { y, h } = L.ov, py = e.clientY * DPR;
+  if (audio.src && py > y - 20 * DPR && py < y + h + 20 * DPR) { scrubbing = true; glc.setPointerCapture(e.pointerId); scrubTo(e); }
+});
+glc.addEventListener('pointermove', e => scrubbing && scrubTo(e));
+glc.addEventListener('pointerup', () => { scrubbing = false; });
+
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey) return;
+  const k = e.key.toLowerCase();
+  if (k === ' ') { e.preventDefault(); togglePlay(); }
+  else if (k === 'arrowright') audio.currentTime = Math.min((audio.duration || 0), audio.currentTime + 5);
+  else if (k === 'arrowleft') audio.currentTime = Math.max(0, audio.currentTime - 5);
+  else if (k === 'i') { st.flashes = !st.flashes; st.invUntil = 0; $('#invState').textContent = st.flashes ? 'on' : 'off'; }
+  else if (k === 'g') st.glow = !st.glow;
+  else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  else if (k === 'o') fileIn.click();
+});
+
+let idleTimer;
+function wake() { document.body.classList.remove('idle'); clearTimeout(idleTimer); idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500); }
+addEventListener('pointermove', wake); addEventListener('keydown', wake); wake();
+
+addEventListener('resize', resize);
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
