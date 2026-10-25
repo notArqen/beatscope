@@ -485,6 +485,9 @@ function drawHeader(t) {
   ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillRect(sx, sy, sw, 1.5 * DPR);
   const kx = sx + sw * (audio.duration ? s / audio.duration : 0);
   ctx.beginPath(); ctx.arc(kx, sy, 4 * u, 0, Math.PI * 2); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * DPR; ctx.stroke();
+  // waterfall in the gap right of the meters, above the slider
+  const wx0 = bx + mw + bs * 0.35, wx1 = sx + sw;
+  if (wx1 - wx0 > bs) drawWaterfall(wx0, by, wx1 - wx0, sy - by - bs * 0.18, dtFrame);
 
   // readouts: tempo + heap stacked over play state, like FL's "0 / 940 MB / 1"
   let ix = sx + sw + bs * 0.5;
@@ -566,7 +569,13 @@ function drawHeader(t) {
   }
 
   ctx.font = `500 ${Math.round(H * 0.022)}px ${FONT}`;
-  ctx.fillText(`≡ - Arrangement › ${trackName || 'untitled'} ›`, bs * 0.35, H * 0.168);
+  const crumb = `≡ - Arrangement › ${trackName || 'untitled'} ›`;
+  ctx.fillText(crumb, bs * 0.35, H * 0.168);
+  // kick lane fills the strip under the toolbar, between the breadcrumb and the SUB block
+  const kx0 = bs * 0.35 + ctx.measureText(crumb).width + bs * 0.6, kx1 = Math.min(sx0, W) - bs * 0.6;
+  const ky0 = r2 + bs * 0.62, ky1 = H * 0.196 - bs * 0.12;
+  if (kx1 - kx0 > bs * 3 && ky1 - ky0 > bs * 0.3) drawKickLane(kx0, ky0, kx1 - kx0, ky1 - ky0, s);
+  ctx.font = `500 ${Math.round(H * 0.022)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillRect(0, H * 0.196, W, 2 * DPR);
 }
@@ -784,6 +793,66 @@ function drawBassRing(dt) {
 // stereo phase scope (goniometer): mid up, side across, with fading trails and a correlation meter.
 // mirrors the bass ring on the right edge.
 const gonio = { trails: [], pk: 0.1, corr: 1 };
+
+// Scrolling spectrogram: log frequency up the side (30 Hz bottom, 16 kHz top), time scrolling left, level = brightness.
+// Scrolls by time (≈4 s across) so the speed is the same at any refresh rate.
+const wf = { c: document.createElement('canvas'), acc: 0 };
+wf.x = wf.c.getContext('2d');
+function drawWaterfall(x, y, w, h, dt) {
+  w = Math.round(w); h = Math.round(h);
+  if (w < 4 || h < 4) return;
+  if (wf.c.width !== w || wf.c.height !== h) { wf.c.width = w; wf.c.height = h; wf.x.fillStyle = '#000'; wf.x.fillRect(0, 0, w, h); }
+  if (!audio.paused && specS) {
+    wf.acc += dt * w / 4;
+    const n = Math.min(w, Math.floor(wf.acc));
+    if (n > 0) {
+      wf.acc -= n;
+      wf.x.drawImage(wf.c, -n, 0);
+      const img = wf.x.createImageData(n, h), d = img.data, lift = 20 * Math.log10(st.gain) * 0.5;
+      for (let r = 0; r < h; r++) {
+        const f = 30 * Math.pow(533, 1 - r / (h - 1));
+        const c = clamp(Math.round(specCols * Math.log(f / 20) / Math.log(1000)), 0, specCols - 1);
+        const v = Math.round(255 * Math.pow(clamp((specS[c] + lift + 92) / 72, 0, 1), 1.6));
+        for (let j = 0; j < n; j++) { const o = (r * n + j) * 4; d[o] = d[o + 1] = d[o + 2] = v; d[o + 3] = 255; }
+      }
+      wf.x.putImageData(img, w - n, 0);
+    }
+  }
+  ctx.drawImage(wf.c, x, y);
+  ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = DPR; ctx.strokeRect(x, y, w, h);
+}
+
+// Kick lane: the offline kicks on a timeline scrolling past a playhead (30% in, so more of what's coming shows).
+// Height = strength, invert hits are solid bars, faint lines are the beat grid at the detected tempo.
+function drawKickLane(x, y, w, h, t) {
+  const span = 6, ph = x + w * 0.3, pps = w / span, t0 = t - (ph - x) / pps, t1 = t0 + span;
+  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.fillRect(x, y + h - DPR, w, DPR);
+  if (st.bpm) {
+    const beat = 60 / st.bpm, b0 = beats && beats.length ? beats[0].t : 0;
+    for (let k = Math.ceil((t0 - b0) / beat); b0 + k * beat < t1; k++) {
+      const gx = x + (b0 + k * beat - t0) * pps;
+      ctx.fillStyle = k % 4 === 0 ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.09)';
+      ctx.fillRect(gx, y, DPR, h);
+    }
+  }
+  if (beats) {
+    for (const b of beats) {
+      if (b.t < t0 - 0.1) continue;
+      if (b.t > t1) break;
+      const bx = x + (b.t - t0) * pps, bh = h * (0.18 + 0.82 * b.s), age = t - b.t;
+      const hot = age >= 0 && age < 0.12 ? 1 - age / 0.12 : 0;      // flash as it crosses the playhead
+      const past = age > 0 ? 0.45 : 1;
+      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, past * (b.inv ? 0.95 : 0.6) + hot).toFixed(3)})`;
+      const bw = (b.inv ? 5 : 2) * DPR + hot * 4 * DPR;
+      ctx.fillRect(bx - bw / 2, y + h - bh, bw, bh);
+    }
+  }
+  ctx.fillStyle = '#fff'; ctx.fillRect(ph - DPR, y - DPR * 2, 2 * DPR, h + DPR * 2);
+  ctx.font = `500 ${Math.round(h * 0.28)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText('KICKS', x + 3 * DPR, y + 2 * DPR);
+}
 
 // FL-style mini master: L/R level bars with peak-hold ticks, then a 24-band spectrum. Levels are in dBFS
 // (-48..0) so it reads like a real master meter, not auto-gained.
