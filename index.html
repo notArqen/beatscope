@@ -55,7 +55,43 @@
     transition: opacity 200ms var(--ease-out);
   }
   #hud b { color: var(--fg); font-weight: 500; }
-  body.idle #hud, body:not(.loaded) #hud { opacity: 0; }
+  body.idle #hud, body:not(.loaded) #hud, body.studio #hud { opacity: 0; }
+  #hud button { all: unset; cursor: pointer; color: var(--dim); }
+  #hud button b { color: var(--fg); font-weight: 500; }
+
+  /* settings + studio panels */
+  .panel {
+    position: fixed; z-index: 20; background: rgba(8, 8, 8, 0.9); color: var(--fg); font-size: 11px;
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+    transition: transform 220ms var(--ease-out), opacity 220ms var(--ease-out);
+  }
+  #settings { top: 0; right: 0; bottom: 0; width: 290px; border-left: 1px solid rgba(255,255,255,0.12);
+    transform: translateX(100%); opacity: 0; overflow-y: auto; padding-bottom: 16px; }
+  body.settings #settings { transform: none; opacity: 1; }
+  #studio { left: 0; right: 0; bottom: 0; height: min(36vh, 260px); border-top: 1px solid rgba(255,255,255,0.12);
+    transform: translateY(100%); opacity: 0; display: flex; flex-direction: column; }
+  body.studio #studio { transform: none; opacity: 1; }
+  body.studio #settings { bottom: min(36vh, 260px); }
+  .p-head { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .p-head b { font-weight: 500; letter-spacing: 0.08em; }
+  .p-head .hint { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .sp { flex: 1; }
+  button.ghost { background: rgba(255,255,255,0.08); color: var(--fg); font-size: 11px; padding: 4px 10px; flex: none; }
+  @media (hover: hover) and (pointer: fine) { button.ghost:hover { background: rgba(255,255,255,0.16); } }
+  .st-body { flex: 1; display: grid; grid-template-columns: 150px 1fr; grid-template-rows: minmax(0, 1fr); min-height: 0; overflow: hidden; }
+  .st-canvas { position: relative; min-height: 0; }
+  .st-lanes { display: grid; grid-template-rows: 16px repeat(7, minmax(0, 1fr)); min-height: 0; border-right: 1px solid rgba(255,255,255,0.08); }
+  .lane { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-top: 1px solid rgba(255,255,255,0.05); min-height: 0; }
+  .lane.all { font-weight: 500; }
+  .lane .key { color: var(--dim); width: 10px; }
+  .lane label { margin-left: auto; display: flex; gap: 4px; align-items: center; color: var(--dim); cursor: pointer; }
+  #stl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; } /* absolute: its pixel size must not grow the grid */
+  .sec { padding: 14px 12px 4px; color: var(--dim); letter-spacing: 0.08em; font-size: 10px; }
+  .row { display: grid; grid-template-columns: 1fr 120px 38px; align-items: center; gap: 8px; padding: 5px 12px; }
+  .row .v { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .row input[type=range] { width: 100%; accent-color: #fff; }
+  .row input[type=color] { width: 100%; height: 20px; border: 0; padding: 0; background: none; cursor: pointer; }
+  .row input[type=checkbox] { accent-color: #fff; justify-self: start; }
   body.idle { cursor: none; }
 </style>
 </head>
@@ -64,12 +100,22 @@
 <div id="empty">
   <h1>BEATSCOPE</h1>
   <div class="tag">Every hit. On the line.</div>
-  <button id="pick">choose audio</button>
+  <div style="display:flex;gap:10px"><button id="pick">choose audio</button><button id="micPick" class="ghost" style="font-size:13px;padding:10px 20px">use mic</button></div>
   <p>or drop a file anywhere</p>
 </div>
 <div id="drop"></div>
 <div id="status"></div>
-<div id="hud"><b>space</b> play &nbsp;·&nbsp; <b>← →</b> seek &nbsp;·&nbsp; <b>click bar</b> scrub &nbsp;·&nbsp; <b>I</b> inverts <span id="invState">on</span> &nbsp;·&nbsp; <b>G</b> glow &nbsp;·&nbsp; <b>F</b> fullscreen &nbsp;·&nbsp; <b>O</b> open</div>
+<div id="hud"><b>space</b> play &nbsp;·&nbsp; <b>← →</b> seek &nbsp;·&nbsp; <b>click bar</b> scrub &nbsp;·&nbsp; <b>I</b> inverts <span id="invState"></span> &nbsp;·&nbsp; <b>G</b> glow &nbsp;·&nbsp; <button data-panel="settings"><b>S</b> settings</button> &nbsp;·&nbsp; <button data-panel="studio"><b>K</b> studio</button> &nbsp;·&nbsp; <button id="micBtn"><b>M</b> mic <span id="micState">off</span></button> &nbsp;·&nbsp; <b>F</b> fullscreen &nbsp;·&nbsp; <b>O</b> open</div>
+<div id="settings" class="panel" aria-label="Settings">
+  <div class="p-head"><b>SETTINGS</b><span class="sp"></span><button class="ghost" id="seSave">save as default</button><button class="ghost" id="seReset">reset</button><button class="ghost" id="seFactory">factory</button><button class="ghost" data-panel="settings">close</button></div>
+  <div id="seRows"></div>
+</div>
+<div id="studio" class="panel" aria-label="Studio">
+  <div class="p-head"><b>STUDIO</b><span class="hint">click = add · drag = move / strength · double-click = delete · 0 = all · 1–6 = lane · wheel = scroll · ⌘/ctrl-wheel = zoom</span><span class="sp"></span>
+    <button class="ghost" id="kfExport">export</button><button class="ghost" id="kfImport">import</button><button class="ghost" id="kfClear">clear</button><button class="ghost" data-panel="studio">close</button>
+    <input type="file" id="kfFile" accept="application/json,.json" hidden></div>
+  <div class="st-body"><div class="st-lanes" id="laneLabels"></div><div class="st-canvas"><canvas id="stl"></canvas></div></div>
+</div>
 <input type="file" id="file" accept="audio/*,video/*" hidden>
 <audio id="audio" preload="auto"></audio>
 
@@ -86,7 +132,10 @@ const ease = (dt, tau) => 1 - Math.exp(-dt / tau);
 // ---------- audio ----------
 const FFT = 8192, SCOPE_N = 4096;
 const td = new Float32Array(FFT), fd = new Float32Array(FFT / 2).fill(-140), lp = new Float32Array(FFT);
-let ac = null, an = null, anBass = null, anL = null, anR = null;
+let ac = null, an = null, anBass = null, anL = null, anR = null, bus = null, outGain = null;
+let mic = null; // { stream, src, t0 } while the live input is on
+const idle = () => mic ? false : audio.paused;   // no signal flowing right now
+const hasSrc = () => !!mic || !!audio.src;
 const GONIO_N = 1024, tdL = new Float32Array(GONIO_N), tdR = new Float32Array(GONIO_N);
 const BASS_N = 4096, tdBass = new Float32Array(BASS_N), RING_M = 360, ringR = new Float32Array(RING_M).fill(1);
 
@@ -96,11 +145,14 @@ function ensureAudio() {
   an = ac.createAnalyser();
   an.fftSize = FFT;
   an.smoothingTimeConstant = 0;
+  // everything analyses one bus: the file player feeds it and the speakers, the mic feeds only the bus (no feedback)
+  bus = ac.createGain();
   const src = ac.createMediaElementSource(audio);
-  src.connect(an);
-  an.connect(ac.destination);
+  outGain = ac.createGain();
+  src.connect(bus); src.connect(outGain); outGain.connect(ac.destination);
+  bus.connect(an);
   // bass-only tap for the circle scope: three cascaded lowpasses, analyser kept alive via a muted gain
-  let node = src;
+  let node = bus;
   for (let i = 0; i < 3; i++) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 110; f.Q.value = 0.6; node.connect(f); node = f; }
   anBass = ac.createAnalyser(); anBass.fftSize = BASS_N; anBass.smoothingTimeConstant = 0;
   node.connect(anBass);
@@ -108,18 +160,20 @@ function ensureAudio() {
   anBass.connect(mute); mute.connect(ac.destination);
   // stereo taps for the phase scope
   const split = ac.createChannelSplitter(2);
-  src.connect(split);
+  bus.connect(split);
   anL = ac.createAnalyser(); anR = ac.createAnalyser();
   for (const [a, ch] of [[anL, 0], [anR, 1]]) { a.fftSize = GONIO_N; a.smoothingTimeConstant = 0; split.connect(a, ch); a.connect(mute); }
 }
 
-let peaks = null, trackName = '', objURL = null, loadToken = 0;
+let peaks = null, trackName = '', fileName = '', fileBpm = 0, objURL = null, loadToken = 0;
 async function load(file) {
   if (!file) return;
+  stopMic();
   ensureAudio();
   ac.resume();
   const token = ++loadToken;
-  trackName = file.name.replace(/\.[^.]+$/, '');
+  trackName = fileName = file.name.replace(/\.[^.]+$/, '');
+  kfLoad(file.name + '|' + file.size);
   peaks = null; beats = null; st.bassRef = 0;
   document.body.classList.add('loaded');
   // formats the browser can't play (ALAC m4a in Chrome, aiff, wma…) get transcoded to wav in-page
@@ -234,12 +288,14 @@ function detectBeats(ab) {
   order.forEach((b, i) => { b.rank = order.length > 1 ? i / (order.length - 1) : 1; });
   // invert = every hit that lands within 10 dB of the song's loudest kicks (absolute, not a rank cutoff, which skipped
   // equally strong kicks whenever most of a song's kicks are strong; no attack gate, kicks over a held 808 have little)
-  for (const b of out) { b.inv = b.lvl >= l98 - 10; b.s = b.score; }
+  st.l98 = l98;
+  for (const b of out) b.s = b.score;
+  applyInvRule(out);
   // tempo from inter-onset intervals, folded into 70–180
   const iv = [];
   for (let i = 1; i < out.length; i++) { let d = out[i].t - out[i - 1].t; if (d < 0.2 || d > 2) continue; let bpm = 60 / d; while (bpm < 70) bpm *= 2; while (bpm > 180) bpm /= 2; iv.push(bpm); }
   iv.sort((x, y) => x - y);
-  st.bpm = iv.length > 3 ? iv[Math.floor(iv.length / 2)] : 0;
+  st.bpm = fileBpm = iv.length > 3 ? iv[Math.floor(iv.length / 2)] : 0;
   return out;
 }
 
@@ -259,19 +315,121 @@ function updateCone(dt) {
   for (let i = BASS_N - n; i < BASS_N; i++) pk = Math.max(pk, Math.abs(tdBass[i]));
   // reference: the song-wide bass peak from the offline pass; until that exists, a peak that only creeps down over ~20 s
   cone.live = pk > cone.live ? pk : cone.live + (pk - cone.live) * ease(dt, 20);
-  const ref = Math.max(st.bassRef || cone.live, 0.01);
-  const g = audio.paused ? 0 : 0.92 / ref;
+  const ref = Math.max((!mic && st.bassRef) || cone.live, 0.01);
+  const g = idle() ? 0 : 0.92 / ref;
   for (let k = 0; k < CONE_TAPS; k++) cone.pos[k] = clamp(tdBass[BASS_N - n + Math.round(k / (CONE_TAPS - 1) * (n - 1))] * g);
   // readable peak excursion: holds briefly, then falls ~25 mm/s
   const ex = clamp(pk * g, 0, 1);
   cone.peak = ex > cone.peak ? ex : Math.max(ex, cone.peak - dt * 1.25);
+  // drives the lens: envelope = bass pressure (holds through a long 808), now = signed cone position (vibration)
+  let e = 0; for (const v of cone.pos) e = Math.max(e, Math.abs(v));
+  st.subEnv = e; st.subNow = cone.pos[CONE_TAPS - 1];
 }
 
+// ---------- effect lanes ----------
+// Every kick effect has its own envelope so studio keyframes can drive them independently; the detector drives
+// whichever lanes are left on Auto.
+const LANES = ['invert', 'shake', 'warp', 'blur', 'ca', 'flash'];
+const LANE_LBL = { invert: 'Invert', shake: 'Shake', warp: 'Warp', blur: 'Zoom blur', ca: 'Aberration', flash: 'Flash' };
+const env = { warp: 0, blur: 0, ca: 0, flash: 0 };
+const shk = { amp: 0, t0: -9, ang: 0 };
+// Kick FX delay: every trigger (detector or keyframe) can be held back up to 300 ms, e.g. to line up with Bluetooth
+// latency or to land the visuals a hair behind the beat. Queued and released from analyse().
+const fxQ = [];
+function trigger(lane, s, t) {
+  if (S.fxDelay > 0) fxQ.push({ lane, s, at: t + S.fxDelay / 1000 });
+  else triggerNow(lane, s, t);
+}
+function releaseFx(t) {
+  for (let i = 0; i < fxQ.length; i++) if (fxQ[i].at <= t) { const q = fxQ.splice(i--, 1)[0]; triggerNow(q.lane, q.s, q.at); }
+}
+function triggerNow(lane, s, t) {
+  if (lane === 'invert') { if (S.invert) st.invUntil = t + 0.07; return; }
+  if (lane === 'shake') {
+    // damped wobble (~13 Hz, gone in ~150 ms); a new hit stacks on whatever is still ringing
+    shk.amp = Math.max(shk.amp * Math.exp(-(t - shk.t0) * 14), 0.25 + 0.75 * s);
+    shk.t0 = t; shk.ang = Math.random() * Math.PI * 2;
+    return;
+  }
+  env[lane] = Math.max(env[lane], 0.12 + 0.88 * Math.pow(s, 1.6));
+  if (lane === 'warp') st.pulse = env.warp;
+}
+const liveHits = [];
 function fireBeat(t, s, inv) {
   st.lastBeat = t;
-  st.pulse = Math.max(st.pulse, 0.12 + 0.88 * Math.pow(s, 1.6));
-  if (s > 0.55) { const ang = Math.random() * Math.PI * 2, m = 0.0035 * s; st.shakeX = Math.cos(ang) * m; st.shakeY = Math.sin(ang) * m; } // micro jolt, strong hits only
-  if (st.flashes && inv) st.invUntil = t + 0.07;
+  if (mic) {
+    const pt = playTime();
+    liveHits.push({ t: pt, s, inv });
+    while (liveHits.length && liveHits[0].t < pt - 12) liveHits.shift();
+    const iv = [];
+    for (let i = 1; i < liveHits.length; i++) { let bpm = 60 / (liveHits[i].t - liveHits[i - 1].t); if (!isFinite(bpm) || bpm < 30) continue; while (bpm < 70) bpm *= 2; while (bpm > 180) bpm /= 2; iv.push(bpm); }
+    iv.sort((a, b) => a - b);
+    st.bpm = iv.length > 3 ? iv[iv.length >> 1] : 0;
+  }
+  for (const l of ['shake', 'warp', 'blur', 'ca', 'flash']) if (kf.auto[l]) trigger(l, s, t);
+  if (inv && kf.auto.invert) trigger('invert', 1, t);
+}
+
+// ---------- settings ----------
+const S_DEFAULT = {
+  lens: 1, warpKick: 1, subWarp: 1, subShake: 0.5,
+  invert: true, invDb: 10, fxDelay: 0, shake: 1, ca: 1, blur: 1, flash: 1,
+  grain: 1, glow: 1, vignette: 1, tint: '#ffffff', tintAmt: 0,
+};
+const S = Object.assign({}, S_DEFAULT);
+try { Object.assign(S, JSON.parse(localStorage.getItem('beatscope.settings')) || {}); } catch (e) {}
+function saveS() { try { localStorage.setItem('beatscope.settings', JSON.stringify(S)); } catch (e) {} }
+function applyInvRule(bs = beats) { if (bs) for (const b of bs) b.inv = b.lvl >= st.l98 - S.invDb; }
+
+// ---------- studio keyframes ----------
+// Manual hits per lane, saved per track (name + size) in localStorage; fired as the playhead crosses them.
+const kf = { key: '', ev: {}, auto: {}, prevT: 0, open: false, span: 12, viewStart: null, sel: null, drag: null };
+function kfReset() { for (const l of LANES) { kf.ev[l] = []; kf.auto[l] = true; } }
+kfReset();
+function kfLoad(key) {
+  kf.key = key; kfReset(); kf.sel = null;
+  try {
+    const d = JSON.parse(localStorage.getItem('beatscope.kf.' + key));
+    if (d) for (const l of LANES) {
+      if (Array.isArray(d.ev?.[l])) kf.ev[l] = d.ev[l];
+      if (d.auto && l in d.auto) kf.auto[l] = !!d.auto[l];
+    }
+  } catch (e) {}
+  syncAutoBoxes();
+}
+let kfSaveT;
+function kfSave() {
+  clearTimeout(kfSaveT);
+  kfSaveT = setTimeout(() => { try { localStorage.setItem('beatscope.kf.' + kf.key, JSON.stringify({ ev: kf.ev, auto: kf.auto })); } catch (e) {} }, 300);
+}
+function kfFire(pt, t) {
+  const d = pt - kf.prevT;
+  if (!audio.paused && d > 0 && d < 0.3) for (const l of LANES) for (const e of kf.ev[l]) if (e.t > kf.prevT && e.t <= pt) trigger(l, e.s, t);
+  kf.prevT = pt;
+}
+
+// live input: the mic feeds the analysis bus only. Raw signal (no echo cancel / AGC / noise suppression) so kicks
+// and bass come through as-is. Offline analysis doesn't exist here, so the live kick detector and bass ref take over.
+async function startMic() {
+  ensureAudio(); ac.resume();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    stopMic();
+    audio.pause();
+    const src = ac.createMediaStreamSource(stream);
+    src.connect(bus);
+    mic = { stream, src, t0: performance.now() };
+    trackName = 'live input'; st.bpm = 0; liveHits.length = 0; // the file's analysis is kept for when the mic goes off
+    document.body.classList.add('loaded');
+    $('#micState').textContent = 'on';
+  } catch (e) { setStatus('mic blocked or unavailable'); setTimeout(() => setStatus(''), 1800); }
+}
+function stopMic() {
+  if (!mic) return;
+  mic.src.disconnect(); for (const tr of mic.stream.getTracks()) tr.stop();
+  mic = null; liveHits.length = 0; st.bpm = 0;
+  $('#micState').textContent = 'off';
+  if (audio.src) { trackName = fileName; st.bpm = fileBpm; } else { trackName = ''; document.body.classList.remove('loaded'); }
 }
 
 function setStatus(s) { const el = $('#status'); el.textContent = s; el.classList.toggle('on', !!s); }
@@ -339,6 +497,7 @@ function computePeaks(ab, rate) {
 // audio.currentTime ticks coarsely in some browsers; extrapolate between ticks so the playhead glides
 const clk = { ct: 0, t: 0 };
 function playTime() {
+  if (mic) return (performance.now() - mic.t0) / 1000;
   const now = performance.now() / 1000, ct = audio.currentTime;
   if (ct !== clk.ct || audio.paused) { clk.ct = ct; clk.t = now; return ct; }
   return Math.min(ct + (now - clk.t) * audio.playbackRate, audio.duration || ct);
@@ -348,7 +507,7 @@ function playTime() {
 const st = {
   gain: 2, peak: 0.3,
   lowAvg: -40, lowPrev: -40, lastBeat: -1,
-  pulse: 0, invUntil: 0, flashes: true, glow: true,
+  pulse: 0, invUntil: 0, glow: true, l98: 0, subEnv: 0, subNow: 0,
   shakeX: 0, shakeY: 0,
   bpm: 0, rms: 0, pk: 0, hist: new Float32Array(90), histAcc: 0,
   split: [0.22, 0.65], // pane dividers as fractions of width
@@ -373,17 +532,19 @@ function analyse(t, dt) {
   for (let b = Math.floor(35 / hz); b <= Math.ceil(140 / hz); b++) e += Math.pow(10, fd[b] / 10);
   const le = 10 * Math.log10(e + 1e-14);
   const rise = le - st.lowAvg;
-  if (beats) {
+  if (beats && !mic) {
     // precomputed onsets: fire every beat the playhead just crossed (seeks re-sync the cursor)
     const pt = playTime();
     if (beatIdx > 0 && beats[beatIdx - 1].t > pt + 0.05) beatIdx = 0;
     if (beatIdx < beats.length && pt - beats[beatIdx].t > 0.25) while (beatIdx < beats.length && beats[beatIdx].t < pt - 0.02) beatIdx++;
     while (beatIdx < beats.length && beats[beatIdx].t <= pt) { if (!audio.paused) fireBeat(t, beats[beatIdx].s, beats[beatIdx].inv); beatIdx++; }
-  } else if (!audio.paused && le > -70 && rise > 4.5 && le >= st.lowPrev && t - st.lastBeat > 0.17) {
+  } else if (!idle() && le > -70 && rise > 4.5 && le >= st.lowPrev && t - st.lastBeat > 0.17) {
     const s = clamp((rise - 3) / 8, 0, 1);
     fireBeat(t, s, s > 0.7);
   }
   st.lowPrev = le;
+  kfFire(playTime(), t);
+  releaseFx(t);
 
   if (anBass) anBass.getFloatTimeDomainData(tdBass);
   updateCone(dt);
@@ -396,8 +557,15 @@ function analyse(t, dt) {
   st.histAcc += dt;
   if (st.histAcc > 1 / 40) { st.histAcc = Math.min(st.histAcc - 1 / 40, 1 / 40); st.hist.copyWithin(0, 1); st.hist[st.hist.length - 1] = pk; }
   st.lowAvg += (le - st.lowAvg) * ease(dt, 0.45);
-  st.pulse *= Math.exp(-dt * 9);
-  const sk = Math.exp(-dt * 40); st.shakeX *= sk; st.shakeY *= sk;
+  const dk = Math.exp(-dt * 9);
+  for (const k in env) env[k] *= dk;
+  st.pulse = env.warp;
+  // shake: damped wobble from kicks/keyframes, plus the sub cone shoving the frame sideways while bass rings
+  const ts = t - shk.t0, a = shk.amp * Math.exp(-ts * 14) * S.shake;
+  const w1 = Math.sin(ts * 2 * Math.PI * 13) * a * 0.012, w2 = Math.sin(ts * 2 * Math.PI * 9 + 1.3) * a * 0.006;
+  const sub = (st.subNow || 0) * 0.0025 * S.subShake;
+  st.shakeX = Math.cos(shk.ang) * w1 - Math.sin(shk.ang) * w2 + sub;
+  st.shakeY = Math.sin(shk.ang) * w1 + Math.cos(shk.ang) * w2;
 }
 
 // ---------- drawing ----------
@@ -414,6 +582,7 @@ function resize() {
   L.title = H * 0.47;
   L.gap = gap;
   const asp = W / H;
+  lens.warp = 0.1 * S.lens;
   lens.zoom = 1 / (1 - lens.warp * Math.max(asp * asp / 4, 0.25));
   layoutPanes();
   resizeGL();
@@ -500,7 +669,7 @@ function drawHeader(t) {
   const top = `${st.bpm ? st.bpm.toFixed(3) : '---.---'} BPM${mb ? `  ${mb} MB` : ''}`;
   ctx.fillText(top, ix, r1 - bh * 0.25);
   ctx.font = `500 ${Math.round(bs * 0.48)}px ${FONT}`;
-  ctx.fillText(`${audio.paused ? 0 : 1}`, ix + bs * 0.6, r1 + bh * 0.28);
+  ctx.fillText(`${idle() ? 0 : 1}`, ix + bs * 0.6, r1 + bh * 0.28);
   ctx.beginPath(); ctx.arc(ix + bs * 1.2, r1 + bh * 0.28, bs * 0.13, 0, Math.PI * 2); ctx.stroke();
   ctx.font = `500 ${Math.round(bs * 0.36)}px ${FONT}`;
   ix += ctx.measureText(top).width + bs * 0.6;
@@ -587,7 +756,7 @@ function drawHeader(t) {
 
 // zoomed arrangement strip: clip header band + waveform scrolling under a centred playhead
 function drawTimeline(t) {
-  if (!audio.src) return;
+  if (!audio.src || mic) return;
   const { y, h } = L.ov, mid = y + h / 2, span = 7, pps = W / span, x0 = W / 2 - t * pps;
   const dur = audio.duration || 0;
   const c0 = Math.max(0, x0), c1 = dur ? Math.min(W, x0 + dur * pps) : W;
@@ -623,7 +792,7 @@ function drawTitle(t) {
   ctx.font = `${fs}px ${PIXEL}`;
   L.titleW = Math.max(ctx.measureText(trackName || 'beatscope').width, ctx.measureText('(00:00 / 00:00)').width);
   ctx.fillText(trackName || 'beatscope', W / 2, L.title);
-  ctx.fillText(`(${fmt(t)} / ${fmt(audio.duration)})`, W / 2, L.title + fs * 0.95);
+  ctx.fillText(mic ? `(live ${fmt(t)})` : `(${fmt(t)} / ${fmt(audio.duration)})`, W / 2, L.title + fs * 0.95);
 }
 
 // pane A: the whole 8192-sample window squashed into columns, min/max in gray, rms band in white
@@ -802,7 +971,7 @@ function drawBassRing(dt) {
   const lfs = Math.round(H * 0.014), lx = cx + R * 1.75;
   ctx.font = `500 ${lfs}px ${FONT}`;
   ctx.fillText('BASS', lx, cy - lfs * 0.7);
-  if (ring.hz && audio.src) ctx.fillText(`${ring.hz.toFixed(1)}Hz | ${noteOf(ring.hz)}`, lx, cy + lfs * 0.7);
+  if (ring.hz && hasSrc()) ctx.fillText(`${ring.hz.toFixed(1)}Hz | ${noteOf(ring.hz)}`, lx, cy + lfs * 0.7);
 }
 
 // stereo phase scope (goniometer): mid up, side across, with fading trails and a correlation meter.
@@ -817,7 +986,7 @@ function drawWaterfall(x, y, w, h, dt) {
   w = Math.round(w); h = Math.round(h);
   if (w < 4 || h < 4) return;
   if (wf.c.width !== w || wf.c.height !== h) { wf.c.width = w; wf.c.height = h; wf.x.fillStyle = '#000'; wf.x.fillRect(0, 0, w, h); }
-  if (!audio.paused && specS) {
+  if (!idle() && specS) {
     wf.acc += dt * w / 4;
     const n = Math.min(w, Math.floor(wf.acc));
     if (n > 0) {
@@ -843,14 +1012,14 @@ const loud = { v: -60, hist: new Float32Array(160), acc: 0 };
 function drawLoudness(x, y, w, h, dt) {
   let sq = 0;
   for (let i = FFT - 4096; i < FFT; i++) sq += td[i] * td[i];
-  const db = audio.paused ? -60 : 10 * Math.log10(sq / 4096 + 1e-12);
+  const db = idle() ? -60 : 10 * Math.log10(sq / 4096 + 1e-12);
   loud.v += (db - loud.v) * ease(dt, 0.4);
   const n = loud.hist.length, step = 6 / n; // 6 s across
-  if (!audio.paused) {
+  if (!idle()) {
     loud.acc += dt;
     while (loud.acc >= step) { loud.acc -= step; loud.hist.copyWithin(0, 1); loud.hist[n - 1] = loud.v; }
   }
-  const fy = d => y + h * (1 - clamp((d + 40) / 40, 0, 1)), cw = w / (n - 1), shift = audio.paused ? 0 : loud.acc / step * cw;
+  const fy = d => y + h * (1 - clamp((d + 40) / 40, 0, 1)), cw = w / (n - 1), shift = idle() ? 0 : loud.acc / step * cw;
   ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(x, y, w, h);
   ctx.font = `500 ${Math.round(h * 0.22)}px ${FONT}`; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   for (const g of [-6, -12, -24]) {
@@ -876,7 +1045,7 @@ const NOTE_LBL = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B
 const chroma = { v: new Float32Array(12) };
 function drawChroma(x, y, w, h, dt) {
   const acc = new Float32Array(12), hz = (ac ? ac.sampleRate : 48000) / FFT;
-  if (!audio.paused) for (let b = Math.ceil(55 / hz); b <= Math.floor(1800 / hz); b++) {
+  if (!idle()) for (let b = Math.ceil(55 / hz); b <= Math.floor(1800 / hz); b++) {
     const pc = ((Math.round(12 * Math.log2(b * hz / 440)) + 69) % 12 + 12) % 12;
     acc[pc] += Math.pow(10, fd[b] / 10);
   }
@@ -913,8 +1082,9 @@ function drawKickLane(x, y, w, h, t) {
       ctx.fillRect(gx, y, DPR, h);
     }
   }
-  if (beats) {
-    for (const b of beats) {
+  const list = mic ? liveHits : beats;
+  if (list) {
+    for (const b of list) {
       if (b.t < t0 - 0.1) continue;
       if (b.t > t1) break;
       const bx = x + (b.t - t0) * pps, bh = h * (0.18 + 0.82 * b.s), age = t - b.t;
@@ -938,7 +1108,7 @@ function drawMiniMaster(x, y, w, h, dt) {
   let pl = 0, pr = 0;
   for (let i = 0; i < GONIO_N; i++) { pl = Math.max(pl, Math.abs(tdL[i])); pr = Math.max(pr, Math.abs(tdR[i])); }
   const db = v => clamp((20 * Math.log10(v + 1e-6) + 48) / 48, 0, 1);
-  const tl = audio.paused ? 0 : db(pl), tr = audio.paused ? 0 : db(pr);
+  const tl = idle() ? 0 : db(pl), tr = idle() ? 0 : db(pr);
   master.l = tl > master.l ? tl : master.l + (tl - master.l) * ease(dt, 0.12);
   master.r = tr > master.r ? tr : master.r + (tr - master.r) * ease(dt, 0.12);
   master.holdL = Math.max(master.l, master.holdL - dt * 0.35);
@@ -961,7 +1131,7 @@ function drawMiniMaster(x, y, w, h, dt) {
       const c1 = Math.floor(specCols * Math.log(30 * Math.pow(533, (i + 1) / n) / 20) / Math.log(1000));
       for (let c = clamp(c0, 0, specCols - 1); c <= clamp(c1, 0, specCols - 1); c++) m = Math.max(m, specS[c]);
     }
-    const t = audio.paused ? 0 : clamp((m + 90) / 80, 0, 1);
+    const t = idle() ? 0 : clamp((m + 90) / 80, 0, 1);
     master.bands[i] = t > master.bands[i] ? t : master.bands[i] + (t - master.bands[i]) * ease(dt, 0.08);
     const bh = ih * master.bands[i];
     ctx.fillStyle = '#fff'; ctx.fillRect(bx + i * cw, y + pad + ih - bh, Math.max(DPR, cw * 0.7), bh);
@@ -1037,7 +1207,7 @@ function draw(t, dt) {
   drawHeader(t);
   drawTimeline(t);
   drawTitle(t);
-  if (audio.src) { drawBassRing(dt); drawGonio(dt); }
+  if (hasSrc()) { drawBassRing(dt); drawGonio(dt); }
   drawDense(); drawScope(); drawSpectrum(dt);
   if (st.hoverDiv >= 0) {
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
@@ -1057,18 +1227,20 @@ const FS_BLUR = HDR + `uniform sampler2D t; uniform vec2 d;
 void main(){ vec3 c=texture(t,uv).rgb*0.2270270;
   c+=(texture(t,uv+d*1.3846154).rgb+texture(t,uv-d*1.3846154).rgb)*0.3162162;
   c+=(texture(t,uv+d*3.2307692).rgb+texture(t,uv-d*3.2307692).rgb)*0.0702703; o=vec4(c,1); }`;
-const FS_FINAL = HDR + `uniform sampler2D base,b1,b2; uniform float time,inv,pulse,glow,warp,zoom; uniform vec2 res,shake;
+const FS_FINAL = HDR + `uniform sampler2D base,b1,b2;
+uniform float time,inv,glow,warp,zoom,pBlur,pCA,pFlash,pGlow,caBase,grainAmt,vigAmt,tintAmt;
+uniform vec2 res,shake; uniform vec3 tint;
 float hash(vec2 p){ p=fract(p*vec2(443.897,441.423)); p+=dot(p,p.yx+19.19); return fract((p.x+p.y)*p.x); }
 // one channel's worth of the image at content coord q: kick zoom-blur, edge softness, bloom, exposure punch, tone map
 float shade(vec2 q, float edge){
   if(q.x<0.0||q.y<0.0||q.x>1.0||q.y>1.0) return 0.0;
   vec3 s=texture(base,q).rgb;
-  float zb=0.016*pulse;                              // zoom blur: short streak out from centre on the hit
+  float zb=0.016*pBlur;                              // zoom blur: short streak out from centre on the hit
   if(zb>0.0015){ for(int i=1;i<6;i++) s+=texture(base,0.5+(q-0.5)*(1.0-zb*float(i)/5.0)).rgb; s/=6.0; }
   vec3 g1=texture(b1,q).rgb, g2=texture(b2,q).rgb;
   s=mix(s,g1*1.5,edge*0.3);                          // slight lens softness at the far edges
-  vec3 col=s*0.93 + glow*(g1*(0.5+0.5*pulse) + g2*(0.5+0.7*pulse));
-  float l=dot(col,vec3(0.299,0.587,0.114))*(1.0+0.2*pulse);   // exposure punch
+  vec3 col=s*0.93 + glow*(g1*(0.5+0.5*pGlow) + g2*(0.5+0.7*pGlow));
+  float l=dot(col,vec3(0.299,0.587,0.114))*(1.0+0.2*pFlash);   // exposure punch
   return 1.0-exp(-l*2.3);
 }
 void main(){
@@ -1078,15 +1250,19 @@ void main(){
   vec2 q=c*zoom*(1.0-warp*r2); q.x/=a; q+=0.5+shake;
   float edge=smoothstep(0.25,1.0,r2);
   // radial chromatic aberration: red pushed out, blue pulled in, growing toward the corners and blooming on kicks
-  float ca=r2*(0.0025+0.02*pulse);
+  float ca=r2*(caBase+0.02*pCA);
   vec3 l=vec3(shade(0.5+(q-0.5)*(1.0+ca),edge), shade(q,edge), shade(0.5+(q-0.5)*(1.0-ca),edge));
   l=mix(l,1.0-l*0.92,inv);
   l=0.015+l*0.97;
   float fine=hash(uv*res+fract(time*7.31)*917.0)-0.5;
   float chunk=hash(floor(uv*res/2.0)+fract(time*3.17)*311.0)-0.5;
   float lum=dot(l,vec3(0.333));
-  l+=(fine*0.08+chunk*0.1)*(0.55+0.6*lum)*(1.0+0.6*pulse);   // grain swells on the hit
-  l*=1.0-r2*0.18*(1.0-0.6*inv);
+  l+=(fine*0.08+chunk*0.1)*(0.55+0.6*lum)*(1.0+0.6*pGlow)*grainAmt;   // grain swells on the hit
+  l*=1.0-r2*0.18*vigAmt*(1.0-0.6*inv);
+  // tint: colourise the mono image (highlights roll toward white so it doesn't go flat), keep the CA fringes
+  lum=dot(l,vec3(0.333));
+  vec3 tinted=lum*tint+pow(lum,3.0)*(1.0-tint)*0.55;
+  l=mix(l,tinted+(l-vec3(lum)),tintAmt);
   o=vec4(l,1);
 }`;
 
@@ -1153,9 +1329,15 @@ function post(t, inv) {
   gl.viewport(0, 0, W, H);
   [src, a4.tex, a8.tex].forEach((tx, i) => { gl.activeTexture(gl.TEXTURE0 + i); gl.bindTexture(gl.TEXTURE_2D, tx); });
   gl.uniform1i(f.u.base, 0); gl.uniform1i(f.u.b1, 1); gl.uniform1i(f.u.b2, 2);
-  gl.uniform1f(f.u.time, t); gl.uniform1f(f.u.inv, inv); gl.uniform1f(f.u.pulse, st.pulse);
-  gl.uniform1f(f.u.glow, st.glow ? 1 : 0); gl.uniform2f(f.u.res, W, H);
-  gl.uniform1f(f.u.warp, lens.warp + 0.1 * st.pulse);
+  gl.uniform1f(f.u.time, t); gl.uniform1f(f.u.inv, inv);
+  gl.uniform1f(f.u.pBlur, env.blur * S.blur); gl.uniform1f(f.u.pCA, env.ca * S.ca);
+  gl.uniform1f(f.u.pFlash, env.flash * S.flash); gl.uniform1f(f.u.pGlow, env.warp);
+  gl.uniform1f(f.u.caBase, 0.0025 * S.ca); gl.uniform1f(f.u.grainAmt, S.grain); gl.uniform1f(f.u.vigAmt, S.vignette);
+  const tc = parseInt(S.tint.slice(1), 16);
+  gl.uniform3f(f.u.tint, (tc >> 16 & 255) / 255, (tc >> 8 & 255) / 255, (tc & 255) / 255); gl.uniform1f(f.u.tintAmt, S.tintAmt);
+  gl.uniform1f(f.u.glow, st.glow ? S.glow : 0); gl.uniform2f(f.u.res, W, H);
+  // rest curvature + kick pump + the sub: pressure bows the lens out, the live cone position makes it vibrate
+  gl.uniform1f(f.u.warp, lens.warp + 0.1 * S.warpKick * env.warp + S.subWarp * (0.025 * (st.subEnv || 0) + 0.018 * (st.subNow || 0)));
   gl.uniform1f(f.u.zoom, lens.zoom);
   gl.uniform2f(f.u.shake, st.shakeX, st.shakeY);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -1181,6 +1363,7 @@ function frame(now) {
   draw(playTime(), dt);
   const inv = t < st.invUntil ? 1 : 0;
   if (gl) post(t, inv);
+  drawStudio();
   requestAnimationFrame(frame);
 }
 
@@ -1190,6 +1373,8 @@ if (!gl) { glc.replaceWith(cv); cv.id = 'gl'; }
 // ---------- input ----------
 const fileIn = $('#file');
 $('#pick').onclick = () => fileIn.click();
+$('#micPick').onclick = () => startMic();
+$('#micBtn').onclick = () => mic ? stopMic() : startMic();
 fileIn.onchange = () => { load(fileIn.files[0]); fileIn.value = ''; };
 
 let dragDepth = 0;
@@ -1202,7 +1387,7 @@ addEventListener('drop', e => {
   load(f);
 });
 
-function togglePlay() { if (!audio.src) return fileIn.click(); ac && ac.resume(); audio.paused ? audio.play() : audio.pause(); }
+function togglePlay() { if (mic) return; if (!audio.src) return fileIn.click(); ac && ac.resume(); audio.paused ? audio.play() : audio.pause(); }
 // the strip scrolls under a fixed playhead: click jumps to that spot, drag drags the tape
 // the pane dividers drag with col-resize
 let scrub = null, divDrag = -1;
@@ -1252,14 +1437,240 @@ glc.addEventListener('dblclick', e => {
 addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey) return;
   const k = e.key.toLowerCase();
+  if (k === 'escape') { togglePanel('settings', false); togglePanel('studio', false); return; }
+  if (e.target.closest && e.target.closest('input')) return; // sliders/colour own their keys
+  if (k === 's') { togglePanel('settings'); return; }
+  if (k === 'k') { togglePanel('studio'); return; }
+  if (k === 'm') { mic ? stopMic() : startMic(); return; }
+  const dig = /^Digit([0-6])$/.exec(e.code);
+  if (kf.open && dig && mic) {
+    const row = +dig[1], sv = e.shiftKey ? 0.5 : 1, now = performance.now() / 1000;
+    if (row === 0) for (const l of LANES) trigger(l, sv, now); else trigger(LANES[row - 1], sv, now);
+    return;
+  }
+  if (kf.open && dig && audio.src) {
+    // tap a hit live at the playhead: 0 = every lane, 1–6 = one lane (shift = half strength); fire it now so you see it land
+    const row = +dig[1], sv = e.shiftKey ? 0.5 : 1, now = performance.now() / 1000;
+    addHit(row, playTime(), sv);
+    if (row === 0) for (const l of LANES) trigger(l, sv, now); else trigger(LANES[row - 1], sv, now);
+    return;
+  }
+  if (kf.open && (k === 'delete' || k === 'backspace') && kf.sel) { deleteHit(kf.sel); return; }
   if (k === ' ') { e.preventDefault(); togglePlay(); }
   else if (k === 'arrowright') audio.currentTime = Math.min((audio.duration || 0), audio.currentTime + 5);
   else if (k === 'arrowleft') audio.currentTime = Math.max(0, audio.currentTime - 5);
-  else if (k === 'i') { st.flashes = !st.flashes; st.invUntil = 0; $('#invState').textContent = st.flashes ? 'on' : 'off'; }
+  else if (k === 'i') { S.invert = !S.invert; st.invUntil = 0; saveS(); syncSettings(); }
   else if (k === 'g') st.glow = !st.glow;
   else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
   else if (k === 'o') fileIn.click();
 });
+
+// ---------- settings pane ----------
+const SE_ROWS = [
+  ['LENS'],
+  ['lens', 'Curvature', 0, 2, 0.05], ['warpKick', 'Kick warp', 0, 3, 0.05], ['subWarp', 'Sub → warp', 0, 3, 0.05],
+  ['KICK FX'],
+  ['fxDelay', 'Kick FX delay (ms)', 0, 300, 5],
+  ['invert', 'Invert flash', 'bool'], ['invDb', 'Invert window (dB)', 2, 24, 1],
+  ['shake', 'Shake', 0, 3, 0.05], ['subShake', 'Sub → shake', 0, 3, 0.05],
+  ['ca', 'Aberration', 0, 3, 0.05], ['blur', 'Zoom blur', 0, 3, 0.05], ['flash', 'Exposure flash', 0, 3, 0.05],
+  ['LOOK'],
+  ['grain', 'Grain', 0, 2, 0.05], ['glow', 'Glow', 0, 2, 0.05], ['vignette', 'Vignette', 0, 2, 0.05],
+  ['tint', 'Tint colour', 'color'], ['tintAmt', 'Tint amount', 0, 1, 0.01],
+];
+function buildSettings() {
+  $('#seRows').innerHTML = SE_ROWS.map(r => {
+    if (r.length === 1) return `<div class="sec">${r[0]}</div>`;
+    const [k, label, a, b, step] = r;
+    const input = a === 'bool' ? `<input type="checkbox" data-k="${k}">`
+      : a === 'color' ? `<input type="color" data-k="${k}">`
+      : `<input type="range" data-k="${k}" min="${a}" max="${b}" step="${step}">`;
+    return `<label class="row"><span>${label}</span>${input}<span class="v" data-v="${k}"></span></label>`;
+  }).join('');
+  syncSettings();
+}
+function syncSettings() {
+  for (const el of document.querySelectorAll('#seRows [data-k]')) {
+    const k = el.dataset.k;
+    if (el.type === 'checkbox') el.checked = S[k]; else el.value = S[k];
+  }
+  for (const el of document.querySelectorAll('#seRows [data-v]')) {
+    const v = S[el.dataset.v];
+    el.textContent = typeof v === 'boolean' ? (v ? 'on' : 'off') : typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : '';
+  }
+  $('#invState').textContent = S.invert ? 'on' : 'off';
+}
+$('#seRows').addEventListener('input', e => {
+  const k = e.target.dataset.k; if (!k) return;
+  S[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'color' ? e.target.value : parseFloat(e.target.value);
+  if (k === 'lens') resize();
+  if (k === 'invDb') applyInvRule();
+  if (k === 'invert' && !S.invert) st.invUntil = 0;
+  saveS(); syncSettings();
+});
+// settings auto-save on every change; "save as default" stores a personal preset that reset returns to
+function userDefault() { try { return Object.assign({}, S_DEFAULT, JSON.parse(localStorage.getItem('beatscope.defaults')) || {}); } catch (e) { return Object.assign({}, S_DEFAULT); } }
+function applySettings(src) { Object.assign(S, src); saveS(); syncSettings(); resize(); applyInvRule(); }
+$('#seSave').onclick = () => {
+  try { localStorage.setItem('beatscope.defaults', JSON.stringify(S)); setStatus('saved as default'); } catch (e) { setStatus("couldn't save (storage blocked)"); }
+  setTimeout(() => setStatus(''), 1200);
+};
+$('#seReset').onclick = () => applySettings(userDefault());
+$('#seFactory').onclick = () => { if (confirm('Reset to factory settings and forget your saved default?')) { try { localStorage.removeItem('beatscope.defaults'); } catch (e) {} applySettings(S_DEFAULT); } };
+buildSettings();
+
+function togglePanel(name, force) {
+  document.body.classList.toggle(name, force);
+  kf.open = document.body.classList.contains('studio');
+}
+for (const b of document.querySelectorAll('[data-panel]')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
+// clicked buttons drop focus so space keeps meaning play/pause
+document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('button'); if (b) b.blur(); });
+
+// ---------- studio timeline ----------
+// rows: ruler, ALL (one hit on every lane, linked as a group), then one row per lane
+const laneBox = $('#laneLabels'), stl = $('#stl'), sctx = stl.getContext('2d'), RULER = 16, ROWS = LANES.length + 1;
+laneBox.innerHTML = '<div></div><div class="lane all"><span class="key">0</span><span>All</span></div>'
+  + LANES.map((l, i) => `<div class="lane"><span class="key">${i + 1}</span><span>${LANE_LBL[l]}</span><label><input type="checkbox" data-lane="${l}"> auto</label></div>`).join('');
+laneBox.addEventListener('change', e => { const l = e.target.dataset.lane; if (l) { kf.auto[l] = e.target.checked; kfSave(); } });
+function syncAutoBoxes() { for (const cb of laneBox.querySelectorAll('input[data-lane]')) cb.checked = kf.auto[cb.dataset.lane]; }
+syncAutoBoxes();
+
+let gidSeq = Date.now();
+function addHit(row, t, s) {
+  if (row === 0) { const g = ++gidSeq; for (const l of LANES) kf.ev[l].push({ t, s, g }); }
+  else kf.ev[LANES[row - 1]].push({ t, s });
+  for (const l of LANES) kf.ev[l].sort((a, b) => a.t - b.t);
+  kfSave();
+}
+function stGeom(e) {
+  const r = stl.getBoundingClientRect(), d = stl.width / Math.max(1, r.width);
+  const x = (e.clientX - r.left) * d, y = (e.clientY - r.top) * d, rh = RULER * d, lh = (stl.height - rh) / ROWS;
+  const pps = stl.width / kf.span;
+  return { x, y, d, rh, lh, pps, t: kf.viewStart + x / pps, row: Math.floor((y - rh) / lh) };
+}
+const strengthAt = (g, row, y) => clamp(1 - (y - (g.rh + row * g.lh) - 3 * g.d) / (g.lh - 6 * g.d), 0.1, 1);
+// nearest manual hit under the pointer: in a lane row a single event, in the ALL row a whole group
+function findHit(g) {
+  if (g.row < 0 || g.row >= ROWS) return null;
+  const pool = g.row === 0 ? LANES.flatMap(l => kf.ev[l].filter(e => e.g).map(e => ({ l, e }))) : kf.ev[LANES[g.row - 1]].map(e => ({ l: LANES[g.row - 1], e }));
+  let best = null, bd = 8 * g.d;
+  for (const h of pool) { const dx = Math.abs((h.e.t - kf.viewStart) * g.pps - g.x); if (dx < bd) { bd = dx; best = h; } }
+  if (!best) return null;
+  return g.row === 0 ? { group: best.e.g, items: LANES.flatMap(l => kf.ev[l].filter(e => e.g === best.e.g).map(e => ({ l, e }))) } : { items: [best] };
+}
+function deleteHit(h) { for (const { l, e } of h.items) kf.ev[l].splice(kf.ev[l].indexOf(e), 1); kf.sel = null; kfSave(); }
+
+stl.addEventListener('pointerdown', ev => {
+  const g = stGeom(ev);
+  stl.setPointerCapture(ev.pointerId);
+  if (g.y < g.rh) { kf.drag = { seek: true }; if (audio.duration) audio.currentTime = clamp(g.t, 0, audio.duration); return; }
+  if (g.row < 0 || g.row >= ROWS) return;
+  let h = findHit(g);
+  if (!h) {
+    addHit(g.row, Math.max(0, g.t), strengthAt(g, g.row, g.y));
+    h = findHit(g);
+  }
+  kf.sel = h;
+  kf.drag = { h, row: g.row, x0: g.x, t0: h.items.map(i => i.e.t) };
+});
+stl.addEventListener('pointermove', ev => {
+  if (!kf.drag) return;
+  const g = stGeom(ev);
+  if (kf.drag.seek) { if (audio.duration) audio.currentTime = clamp(g.t, 0, audio.duration); return; }
+  const { h, row, x0, t0 } = kf.drag, dt = (g.x - x0) / g.pps, sv = strengthAt(g, row, g.y);
+  h.items.forEach((it, i) => { it.e.t = Math.max(0, t0[i] + dt); it.e.s = sv; });
+});
+stl.addEventListener('pointerup', () => { if (kf.drag?.h) { for (const l of LANES) kf.ev[l].sort((a, b) => a.t - b.t); kfSave(); } kf.drag = null; });
+stl.addEventListener('dblclick', ev => { const h = findHit(stGeom(ev)); if (h) deleteHit(h); });
+stl.addEventListener('contextmenu', ev => { ev.preventDefault(); const h = findHit(stGeom(ev)); if (h) deleteHit(h); });
+stl.addEventListener('wheel', ev => {
+  ev.preventDefault();
+  if (ev.ctrlKey || ev.metaKey) { kf.span = clamp(kf.span * Math.exp(ev.deltaY * 0.01), 3, 120); return; }
+  if (!audio.paused) return;
+  kf.viewStart += (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) ? ev.deltaX : ev.deltaY) / stl.getBoundingClientRect().width * kf.span;
+}, { passive: false });
+
+$('#kfExport').onclick = () => {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ track: kf.key, ev: kf.ev, auto: kf.auto })], { type: 'application/json' }));
+  a.download = (trackName || 'beatscope') + '.keys.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+$('#kfImport').onclick = () => $('#kfFile').click();
+$('#kfFile').onchange = async () => {
+  const f = $('#kfFile').files[0]; $('#kfFile').value = '';
+  if (!f) return;
+  try {
+    const d = JSON.parse(await f.text());
+    for (const l of LANES) {
+      kf.ev[l] = Array.isArray(d.ev?.[l]) ? d.ev[l].filter(e => isFinite(e.t) && isFinite(e.s)).map(e => ({ t: +e.t, s: clamp(+e.s, 0.1, 1), ...(e.g ? { g: e.g } : {}) })) : [];
+      if (d.auto && l in d.auto) kf.auto[l] = !!d.auto[l];
+    }
+    syncAutoBoxes(); kfSave();
+  } catch (e) { setStatus("couldn't read those keyframes"); setTimeout(() => setStatus(''), 1600); }
+};
+$('#kfClear').onclick = () => { if (confirm('Clear every keyframe on this track?')) { kfReset(); syncAutoBoxes(); kf.sel = null; kfSave(); } };
+
+function drawStudio() {
+  if (!kf.open) return;
+  const r = stl.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
+  const w = Math.round(r.width * d), h = Math.round(r.height * d);
+  if (!w || !h) return;
+  if (stl.width !== w || stl.height !== h) { stl.width = w; stl.height = h; }
+  const rh = RULER * d, lh = (h - rh) / ROWS, t = playTime();
+  if (!audio.paused || kf.viewStart == null) kf.viewStart = t - kf.span * 0.25;
+  const v0 = kf.viewStart, pps = w / kf.span, X = tt => (tt - v0) * pps;
+  sctx.fillStyle = '#080808'; sctx.fillRect(0, 0, w, h);
+  if (peaks) {
+    sctx.fillStyle = 'rgba(255,255,255,0.07)';
+    for (let x = 0; x < w; x += d) {
+      const i = Math.floor((v0 + x / pps) * peaks.rate); if (i < 0 || i >= peaks.n) continue;
+      const a = (peaks.mx[i] - peaks.mn[i]) * 0.5 * (h - rh); sctx.fillRect(x, rh + (h - rh) / 2 - a / 2, d, a);
+    }
+  }
+  sctx.fillStyle = '#000'; sctx.fillRect(0, 0, w, rh);
+  sctx.font = `${10 * d}px ${FONT}`; sctx.textBaseline = 'middle'; sctx.textAlign = 'left';
+  const step = kf.span > 40 ? 10 : kf.span > 16 ? 2 : 1;
+  for (let s0 = Math.ceil(v0 / step) * step; s0 < v0 + kf.span; s0 += step) {
+    if (s0 < 0) continue;
+    sctx.fillStyle = 'rgba(255,255,255,0.1)'; sctx.fillRect(X(s0), rh, d, h - rh);
+    sctx.fillStyle = 'rgba(255,255,255,0.5)'; sctx.fillText(fmt(s0), X(s0) + 3 * d, rh / 2);
+  }
+  const sel = new Set(kf.sel ? kf.sel.items.map(i => i.e) : []);
+  const mark = (x, y0, bh, hot) => {
+    sctx.fillStyle = hot ? '#fff' : 'rgba(255,255,255,0.8)';
+    const top = y0 + lh - 3 * d - bh;
+    sctx.fillRect(x - 1.5 * d, top, 3 * d, bh);
+    sctx.beginPath(); sctx.moveTo(x, top - 4 * d); sctx.lineTo(x + 4 * d, top); sctx.lineTo(x, top + 4 * d); sctx.lineTo(x - 4 * d, top); sctx.fill();
+    if (hot) { sctx.strokeStyle = '#fff'; sctx.lineWidth = d; sctx.strokeRect(x - 7 * d, y0 + 2 * d, 14 * d, lh - 4 * d); }
+  };
+  for (let row = 0; row < ROWS; row++) {
+    const y0 = rh + row * lh;
+    sctx.fillStyle = row === 0 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0)'; sctx.fillRect(0, y0, w, lh);
+    sctx.fillStyle = 'rgba(255,255,255,0.07)'; sctx.fillRect(0, y0, w, d);
+    if (row === 0) {
+      const seen = new Set();
+      for (const l of LANES) for (const e of kf.ev[l]) {
+        if (!e.g || seen.has(e.g) || e.t < v0 - 0.2 || e.t > v0 + kf.span + 0.2) continue;
+        seen.add(e.g); mark(X(e.t), y0, (lh - 8 * d) * e.s, sel.has(e));
+      }
+      continue;
+    }
+    const l = LANES[row - 1];
+    if (kf.auto[l] && beats) {
+      sctx.fillStyle = 'rgba(255,255,255,0.2)';
+      for (const b of beats) {
+        if (b.t < v0 - 0.1) continue; if (b.t > v0 + kf.span) break;
+        if (l === 'invert' && !b.inv) continue;
+        const bh = (lh - 4 * d) * (l === 'invert' ? 0.9 : 0.2 + 0.7 * b.s);
+        sctx.fillRect(X(b.t) - d, y0 + lh - 2 * d - bh, 2 * d, bh);
+      }
+    }
+    for (const e of kf.ev[l]) { if (e.t < v0 - 0.2 || e.t > v0 + kf.span + 0.2) continue; mark(X(e.t), y0, (lh - 8 * d) * e.s, sel.has(e)); }
+  }
+  sctx.fillStyle = '#fff'; sctx.fillRect(X(t) - d, 0, 2 * d, h);
+}
 
 let idleTimer;
 function wake() { document.body.classList.remove('idle'); clearTimeout(idleTimer); idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500); }
