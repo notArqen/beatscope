@@ -270,6 +270,7 @@ function updateCone(dt) {
 function fireBeat(t, s, inv) {
   st.lastBeat = t;
   st.pulse = Math.max(st.pulse, 0.12 + 0.88 * Math.pow(s, 1.6));
+  if (s > 0.55) { const ang = Math.random() * Math.PI * 2, m = 0.0035 * s; st.shakeX = Math.cos(ang) * m; st.shakeY = Math.sin(ang) * m; } // micro jolt, strong hits only
   if (st.flashes && inv) st.invUntil = t + 0.07;
 }
 
@@ -348,6 +349,7 @@ const st = {
   gain: 2, peak: 0.3,
   lowAvg: -40, lowPrev: -40, lastBeat: -1,
   pulse: 0, invUntil: 0, flashes: true, glow: true,
+  shakeX: 0, shakeY: 0,
   bpm: 0, rms: 0, pk: 0, hist: new Float32Array(90), histAcc: 0,
   split: [0.22, 0.65], // pane dividers as fractions of width
 };
@@ -395,6 +397,7 @@ function analyse(t, dt) {
   if (st.histAcc > 1 / 40) { st.histAcc = Math.min(st.histAcc - 1 / 40, 1 / 40); st.hist.copyWithin(0, 1); st.hist[st.hist.length - 1] = pk; }
   st.lowAvg += (le - st.lowAvg) * ease(dt, 0.45);
   st.pulse *= Math.exp(-dt * 9);
+  const sk = Math.exp(-dt * 40); st.shakeX *= sk; st.shakeY *= sk;
 }
 
 // ---------- drawing ----------
@@ -1054,29 +1057,37 @@ const FS_BLUR = HDR + `uniform sampler2D t; uniform vec2 d;
 void main(){ vec3 c=texture(t,uv).rgb*0.2270270;
   c+=(texture(t,uv+d*1.3846154).rgb+texture(t,uv-d*1.3846154).rgb)*0.3162162;
   c+=(texture(t,uv+d*3.2307692).rgb+texture(t,uv-d*3.2307692).rgb)*0.0702703; o=vec4(c,1); }`;
-const FS_FINAL = HDR + `uniform sampler2D base,b1,b2; uniform float time,inv,pulse,glow,warp,zoom; uniform vec2 res;
+const FS_FINAL = HDR + `uniform sampler2D base,b1,b2; uniform float time,inv,pulse,glow,warp,zoom; uniform vec2 res,shake;
 float hash(vec2 p){ p=fract(p*vec2(443.897,441.423)); p+=dot(p,p.yx+19.19); return fract((p.x+p.y)*p.x); }
+// one channel's worth of the image at content coord q: kick zoom-blur, edge softness, bloom, exposure punch, tone map
+float shade(vec2 q, float edge){
+  if(q.x<0.0||q.y<0.0||q.x>1.0||q.y>1.0) return 0.0;
+  vec3 s=texture(base,q).rgb;
+  float zb=0.016*pulse;                              // zoom blur: short streak out from centre on the hit
+  if(zb>0.0015){ for(int i=1;i<6;i++) s+=texture(base,0.5+(q-0.5)*(1.0-zb*float(i)/5.0)).rgb; s/=6.0; }
+  vec3 g1=texture(b1,q).rgb, g2=texture(b2,q).rgb;
+  s=mix(s,g1*1.5,edge*0.3);                          // slight lens softness at the far edges
+  vec3 col=s*0.93 + glow*(g1*(0.5+0.5*pulse) + g2*(0.5+0.7*pulse));
+  float l=dot(col,vec3(0.299,0.587,0.114))*(1.0+0.2*pulse);   // exposure punch
+  return 1.0-exp(-l*2.3);
+}
 void main(){
   // wide phone lens: aspect-correct pincushion, edges stretched outward (keep in sync with toContent())
   float a=res.x/res.y;
   vec2 c=(uv-0.5)*vec2(a,1.0); float r2=dot(c,c);
-  vec2 q=c*zoom*(1.0-warp*r2); q.x/=a; q+=0.5;
+  vec2 q=c*zoom*(1.0-warp*r2); q.x/=a; q+=0.5+shake;
   float edge=smoothstep(0.25,1.0,r2);
-  float l=0.0;
-  if(q.x>=0.0&&q.y>=0.0&&q.x<=1.0&&q.y<=1.0){
-    vec3 s=texture(base,q).rgb, g1=texture(b1,q).rgb, g2=texture(b2,q).rgb;
-    s=mix(s,g1*1.5,edge*0.3);                        // slight lens softness at the far edges
-    vec3 col=s*0.93 + glow*(g1*(0.5+0.5*pulse) + g2*(0.5+0.7*pulse));
-    l=dot(col,vec3(0.299,0.587,0.114));
-    l=1.0-exp(-l*2.3);
-  }
+  // radial chromatic aberration: red pushed out, blue pulled in, growing toward the corners and blooming on kicks
+  float ca=r2*(0.0025+0.02*pulse);
+  vec3 l=vec3(shade(0.5+(q-0.5)*(1.0+ca),edge), shade(q,edge), shade(0.5+(q-0.5)*(1.0-ca),edge));
   l=mix(l,1.0-l*0.92,inv);
   l=0.015+l*0.97;
   float fine=hash(uv*res+fract(time*7.31)*917.0)-0.5;
   float chunk=hash(floor(uv*res/2.0)+fract(time*3.17)*311.0)-0.5;
-  l+=(fine*0.08+chunk*0.1)*(0.55+0.6*l);
+  float lum=dot(l,vec3(0.333));
+  l+=(fine*0.08+chunk*0.1)*(0.55+0.6*lum)*(1.0+0.6*pulse);   // grain swells on the hit
   l*=1.0-r2*0.18*(1.0-0.6*inv);
-  o=vec4(vec3(l),1);
+  o=vec4(l,1);
 }`;
 
 function prog(fs) {
@@ -1146,6 +1157,7 @@ function post(t, inv) {
   gl.uniform1f(f.u.glow, st.glow ? 1 : 0); gl.uniform2f(f.u.res, W, H);
   gl.uniform1f(f.u.warp, lens.warp + 0.1 * st.pulse);
   gl.uniform1f(f.u.zoom, lens.zoom);
+  gl.uniform2f(f.u.shake, st.shakeX, st.shakeY);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
