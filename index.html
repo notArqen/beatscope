@@ -540,12 +540,21 @@ function drawHeader(t) {
     // light spread over that width (fast = dim streak, slow / stroke ends = bright), summed additively
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const lw = Math.max(3 * DPR, half * 0.012), share = 1.15 / (CONE_TAPS - 1);
+    // brighter while it's actually moving: boost by total travel this frame (rail widths), so fast swings glow
+    let travel = 0;
+    for (let k = 1; k < CONE_TAPS; k++) travel += Math.abs(cone.pos[k] - cone.pos[k - 1]);
+    const motion = clamp(travel / 1.2, 0, 1), boost = 1 + 8 * motion;
+    const lw = Math.max(3 * DPR, half * 0.012), share = 1.15 * boost / (CONE_TAPS - 1);
     for (let k = 0; k < CONE_TAPS - 1; k++) {
       const a = scx + cone.pos[k] * half, b = scx + cone.pos[k + 1] * half;
       const x0 = Math.min(a, b) - lw / 2, w = Math.abs(b - a) + lw;
       ctx.fillStyle = `rgba(255,255,255,${Math.min(1, share * lw / w).toFixed(4)})`;
       ctx.fillRect(x0, scy - ch, w, ch * 2);
+    }
+    // where the cone is right now, lit up in proportion to how hard it's moving
+    if (motion > 0.02) {
+      ctx.fillStyle = `rgba(255,255,255,${(0.35 + 0.65 * motion).toFixed(3)})`;
+      ctx.fillRect(scx + cone.pos[CONE_TAPS - 1] * half - lw / 2, scy - ch, lw, ch * 2);
     }
     ctx.restore();
     ctx.font = `500 ${Math.round(bs * 0.26)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
