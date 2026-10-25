@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>beatscope settings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --fg: #f2f2f2; --dim: rgba(242, 242, 242, 0.5); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #080808; color: var(--fg); }
+  body { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 11px; -webkit-font-smoothing: antialiased; padding-bottom: 16px; }
+  .p-head { position: sticky; top: 0; display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    background: #080808; border-bottom: 1px solid rgba(255,255,255,0.08); z-index: 1; }
+  .p-head b { font-weight: 500; letter-spacing: 0.08em; }
+  .sp { flex: 1; }
+  button { font: inherit; font-size: 11px; color: var(--fg); background: rgba(255,255,255,0.08); border: 0;
+    border-radius: 999px; padding: 4px 10px; cursor: pointer; transition: transform 160ms var(--ease-out); }
+  button:active { transform: scale(0.97); }
+  @media (hover: hover) and (pointer: fine) { button:hover { background: rgba(255,255,255,0.16); } }
+  .sec { padding: 14px 12px 4px; color: var(--dim); letter-spacing: 0.08em; font-size: 10px; }
+  .row { display: grid; grid-template-columns: 1fr 120px 38px; align-items: center; gap: 8px; padding: 5px 12px; }
+  .row .v { text-align: right; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .row input[type=range] { width: 100%; accent-color: #fff; }
+  .row input[type=color] { width: 100%; height: 20px; border: 0; padding: 0; background: none; cursor: pointer; }
+  .row input[type=checkbox] { accent-color: #fff; justify-self: start; }
+  #note { padding: 8px 12px; color: var(--dim); }
+  #gone { display: none; padding: 40px 16px; text-align: center; color: var(--dim); line-height: 1.6; }
+  body.orphan #gone { display: block; }
+  body.orphan #rows, body.orphan .p-head button, body.orphan #note { display: none; }
+</style>
+</head>
+<body>
+<div class="p-head"><b>SETTINGS</b><span class="sp"></span><button id="save">save as default</button><button id="reset">reset</button><button id="factory">factory</button></div>
+<div id="rows"></div>
+<div id="note">Keys still work here: space, ← →, I, K, M, F. S or esc closes this window.</div>
+<div id="gone">The beatscope window this belongs to is gone.<br>Open settings again from beatscope (press S).</div>
+<script>
+// Drives the main beatscope window through window.opener.beatscope (same origin). Rows are built from the main
+// page's own definitions so the two never drift apart.
+const host = () => { try { return window.opener && !window.opener.closed && window.opener.beatscope; } catch (e) { return null; } };
+const rows = document.getElementById('rows');
+
+function build() {
+  const h = host();
+  if (!h) { document.body.classList.add('orphan'); return false; }
+  rows.innerHTML = h.SE_ROWS.map(r => {
+    if (r.length === 1) return `<div class="sec">${r[0]}</div>`;
+    const [k, label, a, b, step] = r;
+    const input = a === 'bool' ? `<input type="checkbox" data-k="${k}">`
+      : a === 'color' ? `<input type="color" data-k="${k}">`
+      : `<input type="range" data-k="${k}" min="${a}" max="${b}" step="${step}">`;
+    return `<label class="row"><span>${label}</span>${input}<span class="v" data-v="${k}"></span></label>`;
+  }).join('');
+  sync();
+  return true;
+}
+
+// mirror the main window's values (it can change them too, e.g. I toggles invert); skip the control being dragged
+function sync() {
+  const h = host();
+  if (!h) { document.body.classList.add('orphan'); return; }
+  for (const el of rows.querySelectorAll('[data-k]')) {
+    if (el === document.activeElement && el.type === 'range') continue;
+    const v = h.S[el.dataset.k];
+    if (el.type === 'checkbox') el.checked = v; else if (String(el.value) !== String(v)) el.value = v;
+  }
+  for (const el of rows.querySelectorAll('[data-v]')) {
+    const v = h.S[el.dataset.v];
+    el.textContent = typeof v === 'boolean' ? (v ? 'on' : 'off') : typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : '';
+  }
+}
+
+rows.addEventListener('input', e => {
+  const k = e.target.dataset.k, h = host();
+  if (!k || !h) return;
+  const el = e.target;
+  h.setSetting(k, el.type === 'checkbox' ? el.checked : el.type === 'color' ? el.value : parseFloat(el.value));
+  sync();
+});
+
+const flash = (btn, text) => { const old = btn.textContent; btn.textContent = text; setTimeout(() => { btn.textContent = old; }, 1100); };
+document.getElementById('save').onclick = e => { const h = host(); if (h) flash(e.currentTarget, h.saveDefault() ? 'saved' : 'storage blocked'); };
+document.getElementById('reset').onclick = () => { const h = host(); if (h) { h.resetSettings(); sync(); } };
+document.getElementById('factory').onclick = () => {
+  const h = host();
+  if (h && confirm('Reset to factory settings and forget your saved default?')) { h.factorySettings(); sync(); }
+};
+
+// player keys keep working while this window has focus; S / esc close it
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase(), inInput = !!(e.target.closest && e.target.closest('input'));
+  if (k === 'escape' || (k === 's' && !e.metaKey && !e.ctrlKey && !inInput)) { window.close(); return; }
+  if (inInput) return;
+  const h = host();
+  if (h) { if (k === ' ') e.preventDefault(); h.key({ key: e.key, code: e.code, shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, target: document.body, preventDefault() {} }); }
+});
+document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) b.blur(); });
+
+if (build()) setInterval(sync, 400);
+</script>
+</body>
+</html>

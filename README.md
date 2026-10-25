@@ -20,11 +20,11 @@ Then drop an audio or video file onto the page. (Plain `index.html` over `file:/
 | --- | --- |
 | space | play / pause |
 | ← → | seek 5s |
-| click/drag top bar | scrub |
+| click/drag top bar or the header slider | scrub |
 | I | toggle kick inverts |
 | G | toggle glow |
 | drag pane dividers | resize the bottom panes (double-click resets) |
-| S | settings: lens, kick FX intensities + delay, sub drive, grain/glow/vignette, tint (auto-saved; "save as default" keeps a preset) |
+| S | settings (opens in its own window; in-page panel if popups are blocked): lens, kick FX intensities + delay, sub drive, grain/glow/vignette, tint (auto-saved; "save as default" keeps a preset) |
 | K | studio: keyframe invert / shake / warp / blur / aberration / flash per lane, All row hits every lane, 0–6 tap live, Auto toggles per lane, export/import JSON |
 | M | live mic input (studio keys become trigger pads) |
 | F | fullscreen |

@@ -654,6 +654,7 @@ function drawHeader(t) {
     ctx.fillStyle = '#fff'; ctx.fillRect(bx, my, mw * clamp(v, 0, 1), mh);
   }
   const sy = by + bh * 0.95, sx = bx + mw * 0.1, sw = W * 0.2;
+  L.slider = { x: sx, y: sy, w: sw };
   ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fillRect(sx, sy, sw, 1.5 * DPR);
   const kx = sx + sw * (audio.duration ? s / audio.duration : 0);
   ctx.beginPath(); ctx.arc(kx, sy, 4 * u, 0, Math.PI * 2); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * DPR; ctx.stroke();
@@ -1390,15 +1391,18 @@ addEventListener('drop', e => {
 function togglePlay() { if (mic) return; if (!audio.src) return fileIn.click(); ac && ac.resume(); audio.paused ? audio.play() : audio.pause(); }
 // the strip scrolls under a fixed playhead: click jumps to that spot, drag drags the tape
 // the pane dividers drag with col-resize
-let scrub = null, divDrag = -1;
+let scrub = null, divDrag = -1, sliderDrag = false;
 const PPS = () => W / 7;
 function divAt(p) {
   if (p.y < L.a.y - 10 * DPR) return -1;
   for (let i = 0; i < 2; i++) if (Math.abs(p.x - st.split[i] * W) < 10 * DPR) return i;
   return -1;
 }
+const onSlider = p => L.slider && audio.duration && !mic && Math.abs(p.y - L.slider.y) < 12 * DPR && p.x > L.slider.x - 10 * DPR && p.x < L.slider.x + L.slider.w + 10 * DPR;
+const seekSlider = p => { audio.currentTime = clamp((p.x - L.slider.x) / L.slider.w, 0, 1) * audio.duration; };
 glc.addEventListener('pointerdown', e => {
   const p = toContent(e.clientX, e.clientY);
+  if (onSlider(p)) { sliderDrag = true; glc.setPointerCapture(e.pointerId); seekSlider(p); return; }
   const d = divAt(p);
   if (d >= 0) { divDrag = d; st.hoverDiv = d; glc.setPointerCapture(e.pointerId); return; }
   const { y, h } = L.ov;
@@ -1408,6 +1412,7 @@ glc.addEventListener('pointerdown', e => {
 });
 glc.addEventListener('pointermove', e => {
   const p = toContent(e.clientX, e.clientY);
+  if (sliderDrag) { seekSlider(p); return; }
   if (divDrag >= 0) {
     const min = 0.08, f = p.x / W;
     st.split[divDrag] = divDrag === 0 ? clamp(f, min, st.split[1] - min) : clamp(f, st.split[0] + min, 1 - min);
@@ -1421,9 +1426,10 @@ glc.addEventListener('pointermove', e => {
     return;
   }
   st.hoverDiv = divAt(p);
-  glc.style.cursor = st.hoverDiv >= 0 ? 'col-resize' : '';
+  glc.style.cursor = st.hoverDiv >= 0 ? 'col-resize' : onSlider(p) ? 'pointer' : '';
 });
 glc.addEventListener('pointerup', e => {
+  if (sliderDrag) { sliderDrag = false; return; }
   if (divDrag >= 0) { divDrag = -1; try { localStorage.setItem('beatscope.split', JSON.stringify(st.split)); } catch (err) {} }
   if (scrub && !scrub.moved) audio.currentTime = clamp(scrub.t + (toContent(e.clientX, e.clientY).x - W / 2) / PPS(), 0, audio.duration);
   scrub = null;
@@ -1434,12 +1440,13 @@ glc.addEventListener('dblclick', e => {
   try { localStorage.removeItem('beatscope.split'); } catch (err) {}
 });
 
-addEventListener('keydown', e => {
+addEventListener('keydown', e => onKey(e));
+function onKey(e) {
   if (e.metaKey || e.ctrlKey) return;
   const k = e.key.toLowerCase();
   if (k === 'escape') { togglePanel('settings', false); togglePanel('studio', false); return; }
   if (e.target.closest && e.target.closest('input')) return; // sliders/colour own their keys
-  if (k === 's') { togglePanel('settings'); return; }
+  if (k === 's') { document.body.classList.contains('settings') ? togglePanel('settings', false) : openSettings(); return; }
   if (k === 'k') { togglePanel('studio'); return; }
   if (k === 'm') { mic ? stopMic() : startMic(); return; }
   const dig = /^Digit([0-6])$/.exec(e.code);
@@ -1463,7 +1470,7 @@ addEventListener('keydown', e => {
   else if (k === 'g') st.glow = !st.glow;
   else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
   else if (k === 'o') fileIn.click();
-});
+}
 
 // ---------- settings pane ----------
 const SE_ROWS = [
@@ -1500,30 +1507,46 @@ function syncSettings() {
   }
   $('#invState').textContent = S.invert ? 'on' : 'off';
 }
-$('#seRows').addEventListener('input', e => {
-  const k = e.target.dataset.k; if (!k) return;
-  S[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.type === 'color' ? e.target.value : parseFloat(e.target.value);
+function setSetting(k, v) {
+  S[k] = v;
   if (k === 'lens') resize();
   if (k === 'invDb') applyInvRule();
   if (k === 'invert' && !S.invert) st.invUntil = 0;
   saveS(); syncSettings();
-});
+}
+const inputValue = el => el.type === 'checkbox' ? el.checked : el.type === 'color' ? el.value : parseFloat(el.value);
+$('#seRows').addEventListener('input', e => { const k = e.target.dataset.k; if (k) setSetting(k, inputValue(e.target)); });
 // settings auto-save on every change; "save as default" stores a personal preset that reset returns to
 function userDefault() { try { return Object.assign({}, S_DEFAULT, JSON.parse(localStorage.getItem('beatscope.defaults')) || {}); } catch (e) { return Object.assign({}, S_DEFAULT); } }
 function applySettings(src) { Object.assign(S, src); saveS(); syncSettings(); resize(); applyInvRule(); }
-$('#seSave').onclick = () => {
-  try { localStorage.setItem('beatscope.defaults', JSON.stringify(S)); setStatus('saved as default'); } catch (e) { setStatus("couldn't save (storage blocked)"); }
-  setTimeout(() => setStatus(''), 1200);
-};
-$('#seReset').onclick = () => applySettings(userDefault());
-$('#seFactory').onclick = () => { if (confirm('Reset to factory settings and forget your saved default?')) { try { localStorage.removeItem('beatscope.defaults'); } catch (e) {} applySettings(S_DEFAULT); } };
+function saveDefault() {
+  try { localStorage.setItem('beatscope.defaults', JSON.stringify(S)); return true; } catch (e) { return false; }
+}
+const resetSettings = () => applySettings(userDefault());
+function factorySettings() { try { localStorage.removeItem('beatscope.defaults'); } catch (e) {} applySettings(S_DEFAULT); }
+$('#seSave').onclick = () => { setStatus(saveDefault() ? 'saved as default' : "couldn't save (storage blocked)"); setTimeout(() => setStatus(''), 1200); };
+$('#seReset').onclick = resetSettings;
+$('#seFactory').onclick = () => { if (confirm('Reset to factory settings and forget your saved default?')) factorySettings(); };
 buildSettings();
+
+// Settings live in their own browser window (settings.html) that drives this page through this handle; top-level
+// const/let aren't window properties, so the popup needs it spelled out. Falls back to the in-page panel if blocked.
+window.beatscope = { S, SE_ROWS, setSetting, saveDefault, resetSettings, factorySettings, key: e => onKey(e) };
+let setWin = null;
+function openSettings() {
+  if (setWin && !setWin.closed) { setWin.focus(); return; }
+  const w = 330, h = Math.min(780, screen.availHeight - 40);
+  const left = Math.max(0, Math.min(screen.availWidth - w, window.screenX + window.outerWidth + 8));
+  setWin = window.open('settings.html', 'beatscope-settings', `popup=yes,width=${w},height=${h},left=${left},top=${window.screenY + 40}`);
+  if (!setWin) togglePanel('settings', true);
+}
+addEventListener('beforeunload', () => { if (setWin && !setWin.closed) setWin.close(); });
 
 function togglePanel(name, force) {
   document.body.classList.toggle(name, force);
   kf.open = document.body.classList.contains('studio');
 }
-for (const b of document.querySelectorAll('[data-panel]')) b.addEventListener('click', () => togglePanel(b.dataset.panel));
+for (const b of document.querySelectorAll('[data-panel]')) b.addEventListener('click', () => b.dataset.panel === 'settings' && !document.body.classList.contains('settings') ? openSettings() : togglePanel(b.dataset.panel));
 // clicked buttons drop focus so space keeps meaning play/pause
 document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('button'); if (b) b.blur(); });
 
