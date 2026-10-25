@@ -120,7 +120,7 @@ async function load(file) {
   ac.resume();
   const token = ++loadToken;
   trackName = file.name.replace(/\.[^.]+$/, '');
-  peaks = null; beats = null;
+  peaks = null; beats = null; st.bassRef = 0;
   document.body.classList.add('loaded');
   // formats the browser can't play (ALAC m4a in Chrome, aiff, wma…) get transcoded to wav in-page
   let blob = file;
@@ -142,7 +142,24 @@ async function load(file) {
     peaks = computePeaks(ab, 240);
     beats = detectBeats(ab);
     beatIdx = 0;
+    const ref = await bassReference(ab);
+    if (token === loadToken) st.bassRef = ref;
   } catch (e) { /* timeline stays flat, live detector takes over; playback still works */ }
+}
+
+// Song-wide bass level for the sub cone: the whole track through the same three lowpasses the live tap uses
+// (offline, mono-summed like the analyser), then the 99th-percentile block peak so one freak transient can't set the scale.
+async function bassReference(ab) {
+  const oc = new OfflineAudioContext(1, ab.length, ab.sampleRate), s = oc.createBufferSource();
+  s.buffer = ab;
+  let node = s;
+  for (let i = 0; i < 3; i++) { const f = oc.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 110; f.Q.value = 0.6; node.connect(f); node = f; }
+  node.connect(oc.destination);
+  s.start();
+  const d = (await oc.startRendering()).getChannelData(0), B = 1024, pk = [];
+  for (let i = 0; i + B <= d.length; i += B) { let m = 0; for (let j = i; j < i + B; j++) { const v = Math.abs(d[j]); if (v > m) m = v; } pk.push(m); }
+  pk.sort((a, b) => a - b);
+  return pk[Math.floor(pk.length * 0.99)] || 0;
 }
 
 // Offline kick detection: low band envelope -> log-energy flux -> adaptive threshold -> peak pick.
@@ -189,7 +206,7 @@ function detectBeats(ab) {
     if (isMax) cand.push({ t: (f - lag + 1) * 0.005, s: v, f });
   }
   // Score every hit against the whole song: how loud the low end lands (level) + how sharp the attack is (flux).
-  // Then rank: only the top fifth invert, the rest get warp/punch scaled down by score.
+  // The big ones invert; everything gets warp/punch scaled by score.
   const pct = (arr, p) => { const s = [...arr].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * p))] ?? 0; };
   for (const c of cand) { let m = -200; for (let g = c.f; g < Math.min(n, c.f + 10); g++) m = Math.max(m, env[g]); c.lvl = m; }
   // gate against the song's loud low end: wobbles at the end of an 808 tail sit 30+ dB under the real hits
@@ -215,7 +232,9 @@ function detectBeats(ab) {
   for (const b of out) b.score = clamp(0.75 * clamp((b.lvl - l10) / Math.max(1, l98 - l10), 0, 1) + 0.25 * clamp(b.s / f90, 0, 1), 0, 1);
   const order = [...out].sort((x, y) => x.score - y.score);
   order.forEach((b, i) => { b.rank = order.length > 1 ? i / (order.length - 1) : 1; });
-  for (const b of out) { b.inv = b.rank >= 0.8 && b.score > 0.55; b.s = b.score; }
+  // invert = every hit that lands within 10 dB of the song's loudest kicks (absolute, not a rank cutoff, which skipped
+  // equally strong kicks whenever most of a song's kicks are strong; no attack gate, kicks over a held 808 have little)
+  for (const b of out) { b.inv = b.lvl >= l98 - 10; b.s = b.score; }
   // tempo from inter-onset intervals, folded into 70–180
   const iv = [];
   for (let i = 1; i < out.length; i++) { let d = out[i].t - out[i - 1].t; if (d < 0.2 || d > 2) continue; let bpm = 60 / d; while (bpm < 70) bpm *= 2; while (bpm > 180) bpm /= 2; iv.push(bpm); }
@@ -225,19 +244,23 @@ function detectBeats(ab) {
 }
 
 // s: 0..1 song-relative strength -> warp/punch amount; inv: this hit is one of the song's big ones
-// Sub driver: excursion is the bass-only signal itself (lowpassed < ~110 Hz), so it moves exactly as fast and hard as
-// the low end. A 35 Hz cone travels several times per frame, so like a real driver it gets motion blur: lo/hi is
-// everywhere the cone went since the last frame, x is where it is now.
-const cone = { x: 0, lo: 0, hi: 0 };
+// Sub driver: excursion is the bass-only signal itself (lowpassed < ~110 Hz), scaled linearly against the whole
+// song's loudest bass (no AGC), so quiet sub barely moves and only the big hits use the full stroke.
+// A 35 Hz cone travels several times per frame, so it's drawn as real motion blur: the line at many points along
+// its actual path since the last frame, each faint, like a long exposure.
+const CONE_TAPS = 48;
+const cone = { pos: new Float32Array(CONE_TAPS), ref: 0.05, live: 0.02 };
 // trails hold a fixed span of time, not a fixed frame count, so they look the same at 60 and 144 Hz
 const trailLen = (dt, secs) => clamp(Math.round(secs / Math.max(dt, 1 / 360)), 2, 16);
 function updateCone(dt) {
-  const sr = ac ? ac.sampleRate : 48000, n = clamp(Math.round(sr * dt), 1, BASS_N);
-  const g = audio.paused ? 0 : 0.95 / Math.max(ring.pk, 0.02);
-  let lo = 1, hi = -1;
-  for (let i = BASS_N - n; i < BASS_N; i++) { const v = tdBass[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
-  cone.x = clamp(tdBass[BASS_N - 1] * g);
-  cone.lo = clamp(lo * g); cone.hi = clamp(hi * g);
+  const sr = ac ? ac.sampleRate : 48000, n = clamp(Math.round(sr * dt), CONE_TAPS, BASS_N);
+  let pk = 0;
+  for (let i = BASS_N - n; i < BASS_N; i++) pk = Math.max(pk, Math.abs(tdBass[i]));
+  // reference: the song-wide bass peak from the offline pass; until that exists, a peak that only creeps down over ~20 s
+  cone.live = pk > cone.live ? pk : cone.live + (pk - cone.live) * ease(dt, 20);
+  const ref = Math.max(st.bassRef || cone.live, 0.01);
+  const g = audio.paused ? 0 : 0.92 / ref;
+  for (let k = 0; k < CONE_TAPS; k++) cone.pos[k] = clamp(tdBass[BASS_N - n + Math.round(k / (CONE_TAPS - 1) * (n - 1))] * g);
 }
 
 function fireBeat(t, s, inv) {
@@ -496,11 +519,18 @@ function drawHeader(t) {
     ctx.fillRect(sx0, r2, half * 2, DPR);
     for (const k of [-1, -0.5, 0, 0.5, 1]) ctx.fillRect(scx + k * half - DPR / 2, r2 - bs * (k ? 0.08 : 0.14), DPR, bs * (k ? 0.16 : 0.28));
     const ch = bs * 0.42;
-    // motion blur band: the travel since last frame
-    ctx.fillStyle = 'rgba(255,255,255,0.28)';
-    ctx.fillRect(scx + cone.lo * half - DPR, r2 - ch * 0.9, (cone.hi - cone.lo) * half + 2 * DPR, ch * 1.8);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(scx + cone.x * half - 1.5 * DPR, r2 - ch, 3 * DPR, ch * 2);
+    // motion blur like an exposure: each slice of the frame smears the line across the distance it covered, with its
+    // light spread over that width (fast = dim streak, slow / stroke ends = bright), summed additively
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    const lw = 3 * DPR, share = 1.15 / (CONE_TAPS - 1);
+    for (let k = 0; k < CONE_TAPS - 1; k++) {
+      const a = scx + cone.pos[k] * half, b = scx + cone.pos[k + 1] * half;
+      const x0 = Math.min(a, b) - lw / 2, w = Math.abs(b - a) + lw;
+      ctx.fillStyle = `rgba(255,255,255,${Math.min(1, share * lw / w).toFixed(4)})`;
+      ctx.fillRect(x0, r2 - ch, w, ch * 2);
+    }
+    ctx.restore();
     ctx.font = `500 ${Math.round(bs * 0.24)}px ${FONT}`; ctx.textAlign = 'left';
     ctx.fillStyle = 'rgba(255,255,255,0.7)';
     ctx.fillText('SUB', sx0, r2 - bs * 0.38);
@@ -588,7 +618,12 @@ function drawScope() {
   }
   const fill = new Path2D(path);
   fill.lineTo(x + w, mid); fill.lineTo(x, mid); fill.closePath();
-  ctx.fillStyle = 'rgba(255,255,255,0.17)'; ctx.fill(fill);
+  // fill fades toward the centre line (bright out at the trace, dim gray at centre), mirrored both halves
+  const grad = ctx.createLinearGradient(0, mid - amp, 0, mid + amp);
+  grad.addColorStop(0, 'rgba(255,255,255,0.62)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.2)');
+  grad.addColorStop(1, 'rgba(255,255,255,0.62)');
+  ctx.fillStyle = grad; ctx.fill(fill);
   ctx.lineWidth = 2.2 * DPR; ctx.lineJoin = 'round'; ctx.strokeStyle = '#fff'; ctx.stroke(path);
 }
 
