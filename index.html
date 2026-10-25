@@ -780,7 +780,14 @@ function drawBassRing(dt) {
   }
   ctx.strokeStyle = 'rgba(255,255,255,0.22)'; ctx.lineWidth = DPR;
   ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,0.08)'; ctx.fill(path);
+  // radial version of the centre scope's fill: black at the disc centre, easing up to dim at the baseline circle,
+  // then brighter the further the shape pushes out past it
+  const RMAX = R * 1.65, rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, RMAX);
+  rg.addColorStop(0, 'rgba(255,255,255,0)');
+  rg.addColorStop(0.4, 'rgba(255,255,255,0.04)');
+  rg.addColorStop(1 / 1.65, 'rgba(255,255,255,0.2)');
+  rg.addColorStop(1, 'rgba(255,255,255,0.62)');
+  ctx.fillStyle = rg; ctx.fill(path);
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * DPR; ctx.lineJoin = 'round'; ctx.stroke(path);
 
   // label beside the ring, stacked, so nothing hangs down into the panes
