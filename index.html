@@ -249,7 +249,8 @@ function detectBeats(ab) {
 // A 35 Hz cone travels several times per frame, so it's drawn as real motion blur: the line at many points along
 // its actual path since the last frame, each faint, like a long exposure.
 const CONE_TAPS = 48;
-const cone = { pos: new Float32Array(CONE_TAPS), ref: 0.05, live: 0.02 };
+const cone = { pos: new Float32Array(CONE_TAPS), ref: 0.05, live: 0.02, peak: 0 };
+const XMAX = 20; // mm, full rail
 // trails hold a fixed span of time, not a fixed frame count, so they look the same at 60 and 144 Hz
 const trailLen = (dt, secs) => clamp(Math.round(secs / Math.max(dt, 1 / 360)), 2, 16);
 function updateCone(dt) {
@@ -261,6 +262,9 @@ function updateCone(dt) {
   const ref = Math.max(st.bassRef || cone.live, 0.01);
   const g = audio.paused ? 0 : 0.92 / ref;
   for (let k = 0; k < CONE_TAPS; k++) cone.pos[k] = clamp(tdBass[BASS_N - n + Math.round(k / (CONE_TAPS - 1) * (n - 1))] * g);
+  // readable peak excursion: holds briefly, then falls ~25 mm/s
+  const ex = clamp(pk * g, 0, 1);
+  cone.peak = ex > cone.peak ? ex : Math.max(ex, cone.peak - dt * 1.25);
 }
 
 function fireBeat(t, s, inv) {
@@ -448,7 +452,10 @@ function drawHeader(t) {
 
   // row 1: icons, clock, peak monitor, meters, slider, readouts, icons
   iconBtn(bs * 0.35, r1 - bs / 2, bs, '↺');
-  const x = Math.round(Math.max(W * 0.1, bs * 1.7)), fs = Math.round(H * 0.068);
+  // mini master section between the refresh button and the clock
+  const mmx = bs * 1.6, mmw = bs * 2.7;
+  drawMiniMaster(mmx, r1 - bs / 2, mmw, bs, dtFrame);
+  const x = Math.round(Math.max(W * 0.1, mmx + mmw + bs * 0.4)), fs = Math.round(H * 0.068);
   ctx.textAlign = 'left'; ctx.fillStyle = '#fff'; ctx.font = `${fs}px ${FONT}`;
   ctx.fillText(clock, x, r1);
   const cw = ctx.measureText(clock).width;
@@ -512,28 +519,41 @@ function drawHeader(t) {
   ctx.fillText('Every hit.', nx, r2 - bs * 0.24);
   ctx.fillText('On the line.', nx, r2 + bs * 0.24);
 
-  // sub driver: a rail with the cone line sliding along it, in the free space after the note
-  const sx0 = nx + ctx.measureText('On the line.').width + bs * 0.9, half = bs * 1.5, scx = sx0 + half;
-  if (sx0 + half * 2 < W - bs * 0.4) {
+  // sub driver: fills the free block after the note, from under the row-1 buttons down to just above the divider
+  const sx0 = nx + ctx.measureText('On the line.').width + bs * 0.9, sx1 = W - bs * 0.5;
+  const sy0 = r1 + bs * 0.75, sy1 = H * 0.196 - bs * 0.25, scy = (sy0 + sy1) / 2;
+  if (sx1 - sx0 > bs * 2.5) {
+    const half = (sx1 - sx0) / 2, scx = sx0 + half, ch = (sy1 - sy0) * 0.36;
     ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.fillRect(sx0, r2, half * 2, DPR);
-    for (const k of [-1, -0.5, 0, 0.5, 1]) ctx.fillRect(scx + k * half - DPR / 2, r2 - bs * (k ? 0.08 : 0.14), DPR, bs * (k ? 0.16 : 0.28));
-    const ch = bs * 0.42;
+    ctx.fillRect(sx0, scy, half * 2, DPR);
+    // scale in mm of cone travel: full rail = ±XMAX (a big sub's rated linear stroke)
+    ctx.font = `500 ${Math.round(bs * 0.2)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    for (const k of [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1]) {
+      const tall = k === 0 ? 0.5 : Math.abs(k) % 0.5 === 0 ? 0.3 : 0.16;
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillRect(scx + k * half - DPR / 2, scy - ch * tall, DPR, ch * tall * 2);
+      const mm = Math.round(k * XMAX);
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillText(`${mm > 0 ? '+' : ''}${mm}`, clamp(scx + k * half, sx0 + bs * 0.2, sx1 - bs * 0.2), scy + ch * 1.05);
+    }
     // motion blur like an exposure: each slice of the frame smears the line across the distance it covered, with its
     // light spread over that width (fast = dim streak, slow / stroke ends = bright), summed additively
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
-    const lw = 3 * DPR, share = 1.15 / (CONE_TAPS - 1);
+    const lw = Math.max(3 * DPR, half * 0.012), share = 1.15 / (CONE_TAPS - 1);
     for (let k = 0; k < CONE_TAPS - 1; k++) {
       const a = scx + cone.pos[k] * half, b = scx + cone.pos[k + 1] * half;
       const x0 = Math.min(a, b) - lw / 2, w = Math.abs(b - a) + lw;
       ctx.fillStyle = `rgba(255,255,255,${Math.min(1, share * lw / w).toFixed(4)})`;
-      ctx.fillRect(x0, r2 - ch, w, ch * 2);
+      ctx.fillRect(x0, scy - ch, w, ch * 2);
     }
     ctx.restore();
-    ctx.font = `500 ${Math.round(bs * 0.24)}px ${FONT}`; ctx.textAlign = 'left';
+    ctx.font = `500 ${Math.round(bs * 0.26)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
     ctx.fillStyle = 'rgba(255,255,255,0.7)';
-    ctx.fillText('SUB', sx0, r2 - bs * 0.38);
+    ctx.fillText('SUB', sx0, sy0);
+    ctx.textAlign = 'right';
+    ctx.fillText(`peak ±${(cone.peak * XMAX).toFixed(1)} mm   Xmax ±${XMAX} mm`, sx1, sy0);
+    ctx.textBaseline = 'middle';
   }
 
   ctx.font = `500 ${Math.round(H * 0.022)}px ${FONT}`;
@@ -755,6 +775,43 @@ function drawBassRing(dt) {
 // stereo phase scope (goniometer): mid up, side across, with fading trails and a correlation meter.
 // mirrors the bass ring on the right edge.
 const gonio = { trails: [], pk: 0.1, corr: 1 };
+
+// FL-style mini master: L/R level bars with peak-hold ticks, then a 24-band spectrum. Levels are in dBFS
+// (-48..0) so it reads like a real master meter, not auto-gained.
+const master = { l: 0, r: 0, holdL: 0, holdR: 0, bands: new Float32Array(24) };
+function drawMiniMaster(x, y, w, h, dt) {
+  let pl = 0, pr = 0;
+  for (let i = 0; i < GONIO_N; i++) { pl = Math.max(pl, Math.abs(tdL[i])); pr = Math.max(pr, Math.abs(tdR[i])); }
+  const db = v => clamp((20 * Math.log10(v + 1e-6) + 48) / 48, 0, 1);
+  const tl = audio.paused ? 0 : db(pl), tr = audio.paused ? 0 : db(pr);
+  master.l = tl > master.l ? tl : master.l + (tl - master.l) * ease(dt, 0.12);
+  master.r = tr > master.r ? tr : master.r + (tr - master.r) * ease(dt, 0.12);
+  master.holdL = Math.max(master.l, master.holdL - dt * 0.35);
+  master.holdR = Math.max(master.r, master.holdR - dt * 0.35);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.1)'; ctx.fillRect(x, y, w, h);
+  const mw = w * 0.09, gap = w * 0.03, pad = h * 0.1, ih = h - pad * 2;
+  for (const [i, v, hold] of [[0, master.l, master.holdL], [1, master.r, master.holdR]]) {
+    const mx = x + pad + i * (mw + gap);
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'; ctx.fillRect(mx, y + pad, mw, ih);
+    ctx.fillStyle = '#fff'; ctx.fillRect(mx, y + pad + ih * (1 - v), mw, ih * v);
+    ctx.fillRect(mx, y + pad + ih * (1 - hold) - DPR, mw, 2 * DPR);
+  }
+  // spectrum bands from the main analyser's smoothed curve, log-spaced 30 Hz–16 kHz
+  const bx = x + pad + 2 * mw + gap * 2.5, bw = x + w - pad - bx, n = master.bands.length, cw = bw / n;
+  for (let i = 0; i < n; i++) {
+    let m = -140;
+    if (specS) {
+      const c0 = Math.floor(specCols * Math.log(30 * Math.pow(533, i / n) / 20) / Math.log(1000));
+      const c1 = Math.floor(specCols * Math.log(30 * Math.pow(533, (i + 1) / n) / 20) / Math.log(1000));
+      for (let c = clamp(c0, 0, specCols - 1); c <= clamp(c1, 0, specCols - 1); c++) m = Math.max(m, specS[c]);
+    }
+    const t = audio.paused ? 0 : clamp((m + 90) / 80, 0, 1);
+    master.bands[i] = t > master.bands[i] ? t : master.bands[i] + (t - master.bands[i]) * ease(dt, 0.08);
+    const bh = ih * master.bands[i];
+    ctx.fillStyle = '#fff'; ctx.fillRect(bx + i * cw, y + pad + ih - bh, Math.max(DPR, cw * 0.7), bh);
+  }
+}
 function drawGonio(dt) {
   if (anL) { anL.getFloatTimeDomainData(tdL); anR.getFloatTimeDomainData(tdR); }
   let eL = 0, eR = 0, lr = 0;
@@ -817,7 +874,9 @@ function drawGonio(dt) {
   ctx.fillStyle = '#fff'; ctx.fillRect(rx - mw + cv01 * mw - 2 * DPR, my - mh * 0.4, 4 * DPR, mh * 1.8);
 }
 
+let dtFrame = 1 / 60;
 function draw(t, dt) {
+  dtFrame = dt;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   drawHeader(t);
