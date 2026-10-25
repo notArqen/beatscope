@@ -569,6 +569,7 @@ function drawHeader(t) {
   }
 
   ctx.font = `500 ${Math.round(H * 0.022)}px ${FONT}`;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff'; // SUB readout leaves these right-aligned
   const crumb = `≡ - Arrangement › ${trackName || 'untitled'} ›`;
   ctx.fillText(crumb, bs * 0.35, H * 0.168);
   // kick lane fills the strip under the toolbar, between the breadcrumb and the SUB block
