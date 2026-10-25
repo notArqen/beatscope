@@ -568,14 +568,15 @@ function drawHeader(t) {
     ctx.textBaseline = 'middle';
   }
 
-  ctx.font = `500 ${Math.round(H * 0.022)}px ${FONT}`;
-  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff'; // SUB readout leaves these right-aligned
-  const crumb = `≡ - Arrangement › ${trackName || 'untitled'} ›`;
-  ctx.fillText(crumb, bs * 0.35, H * 0.168);
-  // kick lane fills the strip under the toolbar, between the breadcrumb and the SUB block
-  const kx0 = bs * 0.35 + ctx.measureText(crumb).width + bs * 0.6, kx1 = Math.min(sx0, W) - bs * 0.6;
-  const ky0 = r2 + bs * 0.62, ky1 = H * 0.196 - bs * 0.12;
-  if (kx1 - kx0 > bs * 3 && ky1 - ky0 > bs * 0.3) drawKickLane(kx0, ky0, kx1 - kx0, ky1 - ky0, s);
+  // strip under the toolbar, up to the SUB block: loudness history | chroma | kick lane
+  const qx0 = bs * 0.35, qx1 = Math.min(sx0, W) - bs * 0.6, qgap = bs * 0.45;
+  const ky0 = r2 + bs * 0.62, ky1 = H * 0.196 - bs * 0.12, kh = ky1 - ky0, qw = qx1 - qx0 - qgap * 2;
+  if (qw > bs * 6 && kh > bs * 0.3) {
+    const w1 = qw * 0.36, w2 = qw * 0.24, w3 = qw - w1 - w2;
+    drawLoudness(qx0, ky0, w1, kh, dtFrame);
+    drawChroma(qx0 + w1 + qgap, ky0, w2, kh, dtFrame);
+    drawKickLane(qx0 + w1 + w2 + qgap * 2, ky0, w3, kh, s);
+  }
   ctx.font = `500 ${Math.round(H * 0.022)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = 'rgba(255,255,255,0.85)';
   ctx.fillRect(0, H * 0.196, W, 2 * DPR);
@@ -783,10 +784,13 @@ function drawBassRing(dt) {
   // radial version of the centre scope's fill: black at the disc centre, easing up to dim at the baseline circle,
   // then brighter the further the shape pushes out past it
   const RMAX = R * 1.65, rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, RMAX);
+  // long, near-linear ramp so the fade reads gradual rather than a steep step at the baseline
   rg.addColorStop(0, 'rgba(255,255,255,0)');
-  rg.addColorStop(0.4, 'rgba(255,255,255,0.04)');
-  rg.addColorStop(1 / 1.65, 'rgba(255,255,255,0.2)');
-  rg.addColorStop(1, 'rgba(255,255,255,0.62)');
+  rg.addColorStop(0.15, 'rgba(255,255,255,0.03)');
+  rg.addColorStop(0.35, 'rgba(255,255,255,0.08)');
+  rg.addColorStop(1 / 1.65, 'rgba(255,255,255,0.17)');
+  rg.addColorStop(0.82, 'rgba(255,255,255,0.3)');
+  rg.addColorStop(1, 'rgba(255,255,255,0.45)');
   ctx.fillStyle = rg; ctx.fill(path);
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 * DPR; ctx.lineJoin = 'round'; ctx.stroke(path);
 
@@ -828,6 +832,68 @@ function drawWaterfall(x, y, w, h, dt) {
   }
   ctx.drawImage(wf.c, x, y);
   ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = DPR; ctx.strokeRect(x, y, w, h);
+}
+
+// Loudness history: full-band RMS in dBFS, ~0.4 s smoothing (short-term-ish), -40..0 with gridlines, scrolling
+// continuously at any refresh rate.
+const loud = { v: -60, hist: new Float32Array(160), acc: 0 };
+function drawLoudness(x, y, w, h, dt) {
+  let sq = 0;
+  for (let i = FFT - 4096; i < FFT; i++) sq += td[i] * td[i];
+  const db = audio.paused ? -60 : 10 * Math.log10(sq / 4096 + 1e-12);
+  loud.v += (db - loud.v) * ease(dt, 0.4);
+  const n = loud.hist.length, step = 6 / n; // 6 s across
+  if (!audio.paused) {
+    loud.acc += dt;
+    while (loud.acc >= step) { loud.acc -= step; loud.hist.copyWithin(0, 1); loud.hist[n - 1] = loud.v; }
+  }
+  const fy = d => y + h * (1 - clamp((d + 40) / 40, 0, 1)), cw = w / (n - 1), shift = audio.paused ? 0 : loud.acc / step * cw;
+  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(x, y, w, h);
+  ctx.font = `500 ${Math.round(h * 0.22)}px ${FONT}`; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (const g of [-6, -12, -24]) {
+    ctx.fillStyle = 'rgba(255,255,255,0.14)'; ctx.fillRect(x, fy(g), w, DPR);
+    ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillText(String(g), x + w - 2 * DPR, fy(g) - h * 0.1);
+  }
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  const path = new Path2D();
+  for (let i = 0; i < n; i++) { const px = x + i * cw - shift, py = fy(loud.hist[i]); i ? path.lineTo(px, py) : path.moveTo(px, py); }
+  const area = new Path2D(path); area.lineTo(x + w, y + h); area.lineTo(x - shift, y + h); area.closePath();
+  const g = ctx.createLinearGradient(0, y, 0, y + h);
+  g.addColorStop(0, 'rgba(255,255,255,0.35)'); g.addColorStop(1, 'rgba(255,255,255,0.02)');
+  ctx.fillStyle = g; ctx.fill(area);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5 * DPR; ctx.stroke(path);
+  ctx.restore();
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText(`LOUD ${loud.v > -59 ? loud.v.toFixed(1) : '--.-'} dBFS`, x + 3 * DPR, y + 2 * DPR);
+}
+
+// Chroma: energy per pitch class (C..B) from the 55 Hz–1.8 kHz FFT bins, normalised to the loudest note, with the
+// strongest one lit. Shows what notes/chord are sounding, which none of the other panes do.
+const NOTE_LBL = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const chroma = { v: new Float32Array(12) };
+function drawChroma(x, y, w, h, dt) {
+  const acc = new Float32Array(12), hz = (ac ? ac.sampleRate : 48000) / FFT;
+  if (!audio.paused) for (let b = Math.ceil(55 / hz); b <= Math.floor(1800 / hz); b++) {
+    const pc = ((Math.round(12 * Math.log2(b * hz / 440)) + 69) % 12 + 12) % 12;
+    acc[pc] += Math.pow(10, fd[b] / 10);
+  }
+  let mx = 0; for (const a of acc) mx = Math.max(mx, a);
+  let best = 0;
+  for (let i = 0; i < 12; i++) {
+    const t = mx > 0 ? Math.pow(acc[i] / mx, 0.6) : 0;
+    chroma.v[i] += (t - chroma.v[i]) * ease(dt, t > chroma.v[i] ? 0.03 : 0.2);
+    if (chroma.v[i] > chroma.v[best]) best = i;
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.06)'; ctx.fillRect(x, y, w, h);
+  const lh = h * 0.26, cw = w / 12, bh = h - lh - 2 * DPR;
+  ctx.font = `500 ${Math.round(lh * 0.8)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  for (let i = 0; i < 12; i++) {
+    const v = chroma.v[i], cx = x + i * cw;
+    ctx.fillStyle = `rgba(255,255,255,${(0.08 + 0.85 * v * (i === best ? 1 : 0.7)).toFixed(3)})`;
+    ctx.fillRect(cx + cw * 0.12, y + bh * (1 - v), cw * 0.76, bh * v);
+    ctx.fillStyle = i === best && chroma.v[best] > 0.05 ? '#fff' : 'rgba(255,255,255,0.4)';
+    ctx.fillText(NOTE_LBL[i], cx + cw / 2, y + h);
+  }
 }
 
 // Kick lane: the offline kicks on a timeline scrolling past a playhead (30% in, so more of what's coming shows).
