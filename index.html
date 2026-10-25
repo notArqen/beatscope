@@ -165,7 +165,11 @@ async function startTap() {
     URL.revokeObjectURL(url);
     const node = new AudioWorkletNode(ac, 'beatscope-tap');
     const sink = ac.createGain(); sink.gain.value = 0;
-    bus.connect(node); node.connect(sink); sink.connect(ac.destination);
+    // pane A shows the low end only (like the reference's 808 strokes): two lowpasses at ~220 Hz keep the kick's
+    // pitch-drop and the bass cycles, and drop hats/noise that would otherwise smear it into static
+    let src = bus;
+    for (let i = 0; i < 2; i++) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 220; f.Q.value = 0.7; src.connect(f); src = f; }
+    src.connect(node); node.connect(sink); sink.connect(ac.destination);
     tap.sr = ac.sampleRate; tap.buf = new Float32Array(Math.round(ac.sampleRate * 2)); tap.wp = 0;
     node.port.onmessage = e => {
       if (idle()) return;
@@ -835,32 +839,48 @@ function drawTitle(t) {
   ctx.fillText(mic ? `(live ${fmt(t)})` : `(${fmt(t)} / ${fmt(audio.duration)})`, W / 2, L.title + fs * 0.95);
 }
 
-// pane A: the last ~1.5 s of raw waveform, one column per pixel, drawn like a dense line plot. Brightness comes from
-// how many times the wave crosses the column: a bass cycle a few px wide is a single pass (dim stroke, flat-topped
-// "comb teeth"), busy high-frequency stretches cross many times and fill solid white, like the reference.
+// pane A: the last ~1 s of the low-passed signal, drawn the way the reference's long-window scope looks: the
+// envelope (top..bottom per column) filled mid-gray, the waveform itself as a thin bright line on top. Bass cycles a
+// few px apart read as crisp strokes over the gray, the kick's fast pitch-drop packs lines into a solid white bar,
+// and it runs a little hot so loud bass clips flat at the pane edges.
 // Needs the continuous history from the tap worklet; until that's up it falls back to the analyser's 170 ms.
-const DENSE_S = 1.5;
-function drawDense() {
-  const { x, y, w, h } = L.a, mid = y + h / 2, amp = h / 2, g = st.gain;
+const DENSE_S = 1.0, dense = { pk: 0.1 }; // ~1 s: the reference fits ~38 bass cycles across the pane
+function drawDense(dt) {
+  const { x, y, w, h } = L.a, mid = y + h / 2, amp = h / 2;
   const live = tap.ready, buf = live ? tap.buf : td, len = buf.length;
-  const N = live ? Math.min(len - 1, Math.round(tap.sr * DENSE_S)) : FFT, base = live ? tap.wp - N : 0, per = N / w;
-  const dim = new Path2D(), mid2 = new Path2D(), hot = new Path2D();
-  let prev = buf[((base - 1) % len + len) % len];
+  const N = live ? Math.min(len - 1, Math.round(tap.sr * DENSE_S)) : FFT, base = live ? tap.wp - N : 0;
+  const at = j => buf[((base + j) % len + len) % len];
+  // own gain: fast attack, slow release, pushed ~25% hot so loud bass flattens at the edges
+  let pk = 0;
+  for (let j = 0; j < N; j += 7) pk = Math.max(pk, Math.abs(at(j)));
+  dense.pk = pk > dense.pk ? pk : dense.pk + (pk - dense.pk) * ease(dt || 1 / 60, 1.5);
+  const g = 1.25 / Math.max(dense.pk, 0.01), Y = v => mid - clamp(v * g) * amp;
+
+  const per = N / w, body = new Path2D();
   for (let i = 0; i < w; i++) {
-    const s0 = Math.floor(i * per), s1 = Math.max(s0 + 1, Math.floor((i + 1) * per));
-    let mn = 1, mx = -1, travel = 0;
-    for (let j = s0; j < s1; j++) {
-      const v = buf[((base + j) % len + len) % len];
-      if (v < mn) mn = v; if (v > mx) mx = v;
-      travel += Math.abs(v - prev); prev = v;
-    }
-    const top = clamp(mx * g), bot = clamp(mn * g), passes = travel / Math.max(1e-5, mx - mn);
-    const path = passes > 4 ? hot : passes > 1.8 ? mid2 : dim;
-    path.rect(x + i, mid - top * amp, 1, Math.max(DPR, (top - bot) * amp));
+    let mn = 1, mx = -1;
+    for (let j = Math.floor(i * per), e = Math.floor((i + 1) * per); j < e; j++) { const v = at(j); if (v < mn) mn = v; if (v > mx) mx = v; }
+    if (mx >= mn) body.rect(x + i, Y(mx), 1, Math.max(DPR, Y(mn) - Y(mx)));
   }
-  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.fill(dim);
-  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fill(mid2);
-  ctx.fillStyle = '#fff'; ctx.fill(hot);
+  // like the reference, everything dims toward the centre line and brightens out at the edges
+  const vg = (edge, centre) => {
+    const gr = ctx.createLinearGradient(0, y, 0, y + h);
+    for (const [o, a] of [[0, edge], [0.22, edge * 0.55], [0.5, centre], [0.78, edge * 0.55], [1, edge]]) gr.addColorStop(o, `rgba(255,255,255,${a})`);
+    return gr;
+  };
+  ctx.fillStyle = vg(0.42, 0.03); ctx.fill(body);
+
+  // the line: ~4 points per px, each the mean of its slice (signal is already < 220 Hz, so no aliasing)
+  const P = w * 4, step = N / P, line = new Path2D();
+  for (let k = 0; k < P; k++) {
+    const j0 = Math.floor(k * step), j1 = Math.max(j0 + 1, Math.floor((k + 1) * step));
+    let sum = 0; for (let j = j0; j < j1; j++) sum += at(j);
+    const px = x + k / 4, py = Y(sum / (j1 - j0));
+    k ? line.lineTo(px, py) : line.moveTo(px, py);
+  }
+  ctx.save(); ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
+  ctx.strokeStyle = vg(1, 0.16); ctx.lineWidth = 1.3 * DPR; ctx.lineJoin = 'round'; ctx.stroke(line);
+  ctx.restore();
 }
 
 // pane B: triggered oscilloscope with a soft fill to the centre line
@@ -1260,7 +1280,7 @@ function draw(t, dt) {
   drawTimeline(t);
   drawTitle(t);
   if (hasSrc()) { drawBassRing(dt); drawGonio(dt); }
-  drawDense(); drawScope(); drawSpectrum(dt);
+  drawDense(dt); drawScope(); drawSpectrum(dt);
   if (st.hoverDiv >= 0) {
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
     ctx.fillRect(Math.round(st.split[st.hoverDiv] * W) - L.gap / 2 - DPR, L.a.y, 2 * DPR, H - L.a.y);
@@ -1384,7 +1404,7 @@ function post(t, inv) {
   gl.uniform1f(f.u.time, t); gl.uniform1f(f.u.inv, inv);
   gl.uniform1f(f.u.pBlur, env.blur * S.blur); gl.uniform1f(f.u.pCA, env.ca * S.ca);
   gl.uniform1f(f.u.pFlash, env.flash * S.flash); gl.uniform1f(f.u.pGlow, env.warp);
-  gl.uniform1f(f.u.caBase, 0.0025 * S.ca); gl.uniform1f(f.u.grainAmt, S.grain); gl.uniform1f(f.u.vigAmt, S.vignette);
+  gl.uniform1f(f.u.caBase, 0.0008 * S.ca); gl.uniform1f(f.u.grainAmt, S.grain); gl.uniform1f(f.u.vigAmt, S.vignette);
   const tc = parseInt(S.tint.slice(1), 16);
   gl.uniform3f(f.u.tint, (tc >> 16 & 255) / 255, (tc >> 8 & 255) / 255, (tc & 255) / 255); gl.uniform1f(f.u.tintAmt, S.tintAmt);
   gl.uniform1f(f.u.glow, st.glow ? S.glow : 0); gl.uniform2f(f.u.res, W, H);
