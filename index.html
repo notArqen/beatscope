@@ -147,20 +147,27 @@ function detectBeats(ab) {
   const chans = [];
   for (let c = 0; c < ab.numberOfChannels; c++) chans.push(ab.getChannelData(c));
   const a = 1 - Math.exp(-2 * Math.PI * 130 / sr); // two cascaded one-poles ≈ 130 Hz lowpass
-  const n = Math.floor(len / hop), env = new Float32Array(n);
+  const n = Math.floor(len / hop), env = new Float32Array(n), sq = new Float32Array(n);
   let y1 = 0, y2 = 0;
   for (let f = 0; f < n; f++) {
-    let sq = 0;
+    let s = 0;
     for (let j = f * hop, e = j + hop; j < e; j++) {
       let v = 0;
       for (const d of chans) v += d[j];
       y1 += (v - y1) * a; y2 += (y1 - y2) * a;
-      sq += y2 * y2;
+      s += y2 * y2;
     }
-    env[f] = 10 * Math.log10(sq / hop + 1e-10);
+    sq[f] = s / hop;
   }
-  // flux over a 15 ms lag so slow swells don't count, only attacks
-  const lag = 3, flux = new Float32Array(n);
+  // energy over a trailing 30 ms window: longer than one cycle of a 35 Hz 808, so its tail reads as a smooth
+  // decay instead of rippling (5 ms slices of a slow sine look like a string of fresh attacks)
+  const WIN = 6;
+  for (let f = 0, acc = 0; f < n; f++) {
+    acc += sq[f]; if (f >= WIN) acc -= sq[f - WIN];
+    env[f] = 10 * Math.log10(Math.max(acc, 0) / Math.min(f + 1, WIN) + 1e-10);
+  }
+  // flux over a 20 ms lag so slow swells don't count, only attacks
+  const lag = 4, flux = new Float32Array(n);
   for (let f = lag; f < n; f++) flux[f] = Math.max(0, env[f] - env[f - lag]);
   // adaptive threshold: local mean + 1.4 sd over ±0.6 s
   const W2 = Math.round(0.6 / 0.005), pre = new Float64Array(n + 1), pre2 = new Float64Array(n + 1);
@@ -175,19 +182,31 @@ function detectBeats(ab) {
     for (let g = Math.max(0, f - 8); g <= Math.min(n - 1, f + 8); g++) if (flux[g] > v) { isMax = false; break; }
     if (isMax) cand.push({ t: (f - lag + 1) * 0.005, s: v, f });
   }
-  const out = [];
-  for (const c of cand) {
-    const prev = out[out.length - 1];
-    if (prev && c.t - prev.t < 0.12) { if (c.s > prev.s) out[out.length - 1] = c; continue; }
-    out.push(c);
-  }
   // Score every hit against the whole song: how loud the low end lands (level) + how sharp the attack is (flux).
   // Then rank: only the top fifth invert, the rest get warp/punch scaled down by score.
   const pct = (arr, p) => { const s = [...arr].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(s.length * p))] ?? 0; };
-  for (const b of out) { let m = -200; for (let g = b.f; g < Math.min(n, b.f + 8); g++) m = Math.max(m, env[g]); b.lvl = m; }
+  for (const c of cand) { let m = -200; for (let g = c.f; g < Math.min(n, c.f + 10); g++) m = Math.max(m, env[g]); c.lvl = m; }
+  // gate against the song's loud low end: wobbles at the end of an 808 tail sit 30+ dB under the real hits
+  const step = Math.max(1, Math.floor(n / 20000)), sample = [];
+  for (let f = 0; f < n; f += step) sample.push(env[f]);
+  const loud = pct(sample, 0.97);
+  const out = [];
+  for (const c of cand) {
+    if (c.lvl < loud - 24) continue;
+    const prev = out[out.length - 1];
+    if (prev && c.t - prev.t < 0.12) { if (c.s > prev.s) out[out.length - 1] = c; continue; }
+    // masking: an 808 notches and re-swells ~150 ms after the hit; inside 250 ms only a clearly bigger hit counts
+    if (prev && c.t - prev.t < 0.25) {
+      let since = prev.lvl;
+      for (let g = prev.f; g < c.f; g++) since = Math.max(since, env[g]);
+      if (c.lvl < since + 3) continue;
+    }
+    out.push(c);
+  }
   const lv = out.map(b => b.lvl), fl = out.map(b => b.s);
   const l10 = pct(lv, 0.1), l98 = pct(lv, 0.98), f90 = pct(fl, 0.9) || 1;
-  for (const b of out) b.score = clamp(0.55 * clamp((b.lvl - l10) / Math.max(1, l98 - l10), 0, 1) + 0.45 * clamp(b.s / f90, 0, 1), 0, 1);
+  // weighted toward level: a kick out of silence has a huge attack but isn't "bigger" than one riding a bassline
+  for (const b of out) b.score = clamp(0.75 * clamp((b.lvl - l10) / Math.max(1, l98 - l10), 0, 1) + 0.25 * clamp(b.s / f90, 0, 1), 0, 1);
   const order = [...out].sort((x, y) => x.score - y.score);
   order.forEach((b, i) => { b.rank = order.length > 1 ? i / (order.length - 1) : 1; });
   for (const b of out) { b.inv = b.rank >= 0.8 && b.score > 0.55; b.s = b.score; }
