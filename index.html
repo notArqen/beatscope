@@ -165,11 +165,7 @@ async function startTap() {
     URL.revokeObjectURL(url);
     const node = new AudioWorkletNode(ac, 'beatscope-tap');
     const sink = ac.createGain(); sink.gain.value = 0;
-    // pane A shows the low end only (like the reference's 808 strokes): two lowpasses at ~220 Hz keep the kick's
-    // pitch-drop and the bass cycles, and drop hats/noise that would otherwise smear it into static
-    let src = bus;
-    for (let i = 0; i < 2; i++) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 220; f.Q.value = 0.7; src.connect(f); src = f; }
-    src.connect(node); node.connect(sink); sink.connect(ac.destination);
+    bus.connect(node); node.connect(sink); sink.connect(ac.destination);
     tap.sr = ac.sampleRate; tap.buf = new Float32Array(Math.round(ac.sampleRate * 2)); tap.wp = 0;
     node.port.onmessage = e => {
       if (idle()) return;
@@ -839,10 +835,11 @@ function drawTitle(t) {
   ctx.fillText(mic ? `(live ${fmt(t)})` : `(${fmt(t)} / ${fmt(audio.duration)})`, W / 2, L.title + fs * 0.95);
 }
 
-// pane A: the last ~1 s of the low-passed signal, drawn the way the reference's long-window scope looks: the
-// envelope (top..bottom per column) filled mid-gray, the waveform itself as a thin bright line on top. Bass cycles a
-// few px apart read as crisp strokes over the gray, the kick's fast pitch-drop packs lines into a solid white bar,
-// and it runs a little hot so loud bass clips flat at the pane edges.
+// pane A: the last ~1 s of the full-band signal, drawn the way the reference's long-window scope looks: the true
+// peak-to-peak envelope per column filled gray (so hats/snares/vocals show in its shape), the waveform itself as a thin
+// bright line on top at screen resolution (each point averages its slice, like a scope at a long timebase, so it
+// doesn't turn to static). Bass cycles read as crisp strokes, the kick's pitch-drop packs lines into a solid bar,
+// and it runs a little hot so loud parts clip flat at the pane edges.
 // Needs the continuous history from the tap worklet; until that's up it falls back to the analyser's 170 ms.
 const DENSE_S = 1.0, dense = { pk: 0.1 }; // ~1 s: the reference fits ~38 bass cycles across the pane
 function drawDense(dt) {
@@ -870,7 +867,7 @@ function drawDense(dt) {
   };
   ctx.fillStyle = vg(0.42, 0.03); ctx.fill(body);
 
-  // the line: ~4 points per px, each the mean of its slice (signal is already < 220 Hz, so no aliasing)
+  // the line: ~4 points per px, each the mean of its slice
   const P = w * 4, step = N / P, line = new Path2D();
   for (let k = 0; k < P; k++) {
     const j0 = Math.floor(k * step), j1 = Math.max(j0 + 1, Math.floor((k + 1) * step));
