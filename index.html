@@ -853,11 +853,35 @@ function drawDense(dt) {
   dense.pk = pk > dense.pk ? pk : dense.pk + (pk - dense.pk) * ease(dt || 1 / 60, 1.5);
   const g = 1.25 / Math.max(dense.pk, 0.01), Y = v => mid - clamp(v * g) * amp;
 
-  const per = N / w, body = new Path2D();
+  // whiteness = zero-crossing density, measured off the reference: its solid bar is exactly the first ~55-65 ms of each
+  // kick, where the audio crosses zero 1200-3000x/s (click + distortion) at the same loudness as the 808 body that
+  // follows at <400x/s. At that density several crossings land per pixel and the strokes merge into solid white.
+  // Ramp 500 -> 1500 crossings/s (over a ~5 ms window per column, so it doesn't depend on pixel width), gated by
+  // loudness so only loud + dense goes white.
+  const per = N / w, body = new Path2D(), white = [new Path2D(), new Path2D(), new Path2D()];
+  const win = Math.max(1, Math.round((live ? tap.sr : 44100) * 0.005));
+  let prevSign = at(-1) >= 0;
+  const zc = new Uint16Array(w);
   for (let i = 0; i < w; i++) {
+    let mn = 1, mx = -1, c = 0;
+    const j0 = Math.floor(i * per), j1 = Math.floor((i + 1) * per);
+    for (let j = j0; j < j1; j++) { const v = at(j); if (v < mn) mn = v; if (v > mx) mx = v; const sg = v >= 0; if (sg !== prevSign) c++; prevSign = sg; }
+    zc[i] = c;
+    if (mx >= mn) body.rect(x + i, Y(mx), 1, Math.max(DPR, Y(mn) - Y(mx)));
+  }
+  // crossings/s per column, averaged over ~5 ms of neighbours
+  const cols = Math.max(1, Math.round(win / per)), sr = live ? tap.sr : 44100;
+  for (let i = 0; i < w; i++) {
+    let c = 0, n = 0;
+    for (let k = Math.max(0, i - (cols >> 1)); k <= Math.min(w - 1, i + (cols >> 1)); k++) { c += zc[k]; n++; }
+    const rate = c / 2 / (n * per / sr);           // two sign changes per cycle-crossing pair -> crossings per second
     let mn = 1, mx = -1;
     for (let j = Math.floor(i * per), e = Math.floor((i + 1) * per); j < e; j++) { const v = at(j); if (v < mn) mn = v; if (v > mx) mx = v; }
-    if (mx >= mn) body.rect(x + i, Y(mx), 1, Math.max(DPR, Y(mn) - Y(mx)));
+    // ...and it has to be loud: busy-but-quiet tails stay thin and dim in the reference
+    const loudness = clamp((Math.max(-mn, mx) * g - 0.45) / 0.4, 0, 1);
+    const wv = clamp((rate - 500) / 1000, 0, 1) * loudness;
+    if (wv < 0.15) continue;
+    white[wv > 0.85 ? 2 : wv > 0.5 ? 1 : 0].rect(x + i, Y(mx), 1, Math.max(DPR, Y(mn) - Y(mx)));
   }
   // like the reference, everything dims toward the centre line and brightens out at the edges
   const vg = (edge, centre) => {
@@ -866,6 +890,7 @@ function drawDense(dt) {
     return gr;
   };
   ctx.fillStyle = vg(0.42, 0.03); ctx.fill(body);
+  [0.4, 0.72, 1].forEach((a, k) => { ctx.fillStyle = `rgba(255,255,255,${a})`; ctx.fill(white[k]); });
 
   // the line: ~4 points per px, each the mean of its slice
   const P = w * 4, step = N / P, line = new Path2D();
