@@ -26,6 +26,7 @@ Then drop an audio or video file onto the page. (Plain `index.html` over `file:/
 | drag pane dividers | resize the bottom panes (double-click resets) |
 | S | settings (opens in its own window; in-page panel if popups are blocked): lens, kick FX intensities + delay, sub drive, grain/glow/vignette, tint (auto-saved; "save as default" keeps a preset) |
 | K | studio: keyframe invert / shake / warp / blur / aberration / flash per lane, All row hits every lane, 0–6 tap live, Auto toggles per lane, export/import JSON |
+| L | library: pick a folder, ↑ ↓ through every track in it (subfolders too) and the selection plays instantly, Quick Look style (own window) |
 | M | live mic input (studio keys become trigger pads) |
 | F | fullscreen |
 | O | open file |

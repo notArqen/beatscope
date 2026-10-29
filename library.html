@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>beatscope library</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root { --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --fg: #f2f2f2; --dim: rgba(242, 242, 242, 0.5); --faint: rgba(242, 242, 242, 0.28); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #080808; color: var(--fg); }
+  body { font-family: "IBM Plex Mono", ui-monospace, Menlo, monospace; font-size: 11px; -webkit-font-smoothing: antialiased;
+    display: flex; flex-direction: column; overflow: hidden; }
+  .p-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); flex: none; }
+  .p-head b { font-weight: 500; letter-spacing: 0.08em; }
+  #folder { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .sp { flex: 1; }
+  button { font: inherit; font-size: 11px; color: var(--fg); background: rgba(255,255,255,0.08); border: 0; flex: none;
+    border-radius: 999px; padding: 4px 10px; cursor: pointer; transition: transform 160ms var(--ease-out); }
+  button:active { transform: scale(0.97); }
+  @media (hover: hover) and (pointer: fine) { button:hover { background: rgba(255,255,255,0.16); } }
+  button.big { font-size: 13px; padding: 10px 20px; background: var(--fg); color: #000; }
+
+  #list { flex: 1; overflow-y: auto; outline: none; padding: 4px 0; }
+  .it { display: grid; grid-template-columns: 26px 12px 1fr auto; gap: 6px; align-items: baseline; padding: 5px 12px; cursor: default;
+    border-left: 2px solid transparent; }
+  .it .n { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+  .it .play { color: var(--fg); visibility: hidden; }
+  .it .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .it .name i { font-style: normal; color: var(--faint); }
+  .it .meta { color: var(--faint); font-variant-numeric: tabular-nums; }
+  @media (hover: hover) and (pointer: fine) { .it:hover { background: rgba(255,255,255,0.04); } }
+  .it.sel { background: rgba(255,255,255,0.12); border-left-color: var(--fg); }
+  .it.sel .meta, .it.sel .n { color: var(--dim); }
+  .it.playing .play { visibility: visible; }
+
+  #empty { flex: 1; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; color: var(--dim); padding: 20px; line-height: 1.6; }
+  body.has #empty { display: none; }
+  body:not(.has) #list { display: none; }
+  #foot { flex: none; padding: 8px 12px; color: var(--faint); border-top: 1px solid rgba(255,255,255,0.08); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #gone { display: none; padding: 40px 16px; text-align: center; color: var(--dim); line-height: 1.6; }
+  body.orphan #gone { display: block; }
+  body.orphan #list, body.orphan #empty, body.orphan .p-head button, body.orphan #foot { display: none; }
+</style>
+</head>
+<body>
+<div class="p-head"><b>LIBRARY</b><span id="folder"></span><span class="sp"></span><button id="choose">choose folder</button></div>
+<div id="empty">
+  <button class="big" id="choose2">choose folder</button>
+  <div>Everything playable inside it, subfolders included.<br>↑ ↓ to browse — whatever's selected plays.</div>
+</div>
+<div id="list" tabindex="0"></div>
+<div id="foot">↑ ↓ browse · enter restart · space play · ← → seek · L / esc close</div>
+<div id="gone">The beatscope window this belongs to is gone.<br>Open the library again from beatscope (press L).</div>
+<input type="file" id="pick" webkitdirectory multiple hidden>
+<script>
+// Quick Look for beatscope: renders the main window's library (window.opener.beatscope.lib) and moves the selection;
+// every selection change plays immediately in the main window.
+const host = () => { try { return window.opener && !window.opener.closed && window.opener.beatscope; } catch (e) { return null; } };
+const list = document.getElementById('list'), pick = document.getElementById('pick');
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const size = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
+
+function render() {
+  const h = host();
+  if (!h) { document.body.classList.add('orphan'); return; }
+  const { items, folder } = h.lib;
+  document.body.classList.toggle('has', items.length > 0);
+  document.getElementById('folder').textContent = items.length ? `${folder} · ${items.length}` : '';
+  list.innerHTML = items.map((it, i) => {
+    const parts = it.path.split('/'), file = parts.pop(), sub = parts.slice(1).join('/');
+    const ext = (file.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+    const base = file.replace(/\.[^.]+$/, '');
+    return `<div class="it" data-i="${i}"><span class="n">${i + 1}</span><span class="play">▶</span>`
+      + `<span class="name">${sub ? `<i>${esc(sub)}/</i>` : ''}${esc(base)}</span><span class="meta">${ext} · ${size(it.file.size)}</span></div>`;
+  }).join('');
+  mark();
+}
+
+let shown = -2, shownPlaying = null;
+function mark() {
+  const h = host();
+  if (!h) { document.body.classList.add('orphan'); return; }
+  const i = h.lib.idx, playing = h.isPlaying();
+  if (i === shown && playing === shownPlaying) return;
+  list.querySelector('.sel')?.classList.remove('sel', 'playing');
+  const el = list.querySelector(`[data-i="${i}"]`);
+  if (el) { el.classList.add('sel'); el.classList.toggle('playing', playing); el.scrollIntoView({ block: 'nearest' }); }
+  shown = i; shownPlaying = playing;
+}
+
+function go(i) {
+  const h = host();
+  if (!h || !h.lib.items.length) return;
+  h.playIndex(Math.max(0, Math.min(h.lib.items.length - 1, i)));
+  shown = -2; mark();
+}
+
+const choose = () => pick.click();
+document.getElementById('choose').onclick = choose;
+document.getElementById('choose2').onclick = choose;
+pick.onchange = () => {
+  const h = host(), files = pick.files;
+  if (!h || !files.length) return;
+  const n = h.setLibrary(files, (files[0].webkitRelativePath || '').split('/')[0]);
+  pick.value = '';
+  render();
+  if (n) go(0);
+  list.focus();
+};
+
+list.addEventListener('click', e => { const it = e.target.closest('.it'); if (it) go(+it.dataset.i); });
+
+addEventListener('keydown', e => {
+  const h = host(), k = e.key;
+  if (!h || e.metaKey || e.ctrlKey) return;
+  const i = h.lib.idx, n = h.lib.items.length;
+  const page = Math.max(1, Math.floor(list.clientHeight / 26) - 1);
+  const moves = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: n - 1, PageDown: i + page, PageUp: i - page };
+  if (k in moves && n) { e.preventDefault(); go(i < 0 && k === 'ArrowDown' ? 0 : moves[k]); return; }
+  if (k === 'Enter' && i >= 0) { e.preventDefault(); go(i); return; }
+  if (k === 'Escape' || k.toLowerCase() === 'l') { window.close(); return; }
+  // everything else (space, ← →, I, K, M, F, S…) drives the player
+  if (k === ' ') e.preventDefault();
+  h.key({ key: k, code: e.code, shiftKey: e.shiftKey, metaKey: false, ctrlKey: false, target: document.body, preventDefault() {} });
+});
+document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) b.blur(); });
+
+render();
+setInterval(mark, 250);
+list.focus();
+</script>
+</body>
+</html>

@@ -105,7 +105,7 @@
 </div>
 <div id="drop"></div>
 <div id="status"></div>
-<div id="hud"><b>space</b> play &nbsp;·&nbsp; <b>← →</b> seek &nbsp;·&nbsp; <b>click bar</b> scrub &nbsp;·&nbsp; <b>I</b> inverts <span id="invState"></span> &nbsp;·&nbsp; <b>G</b> glow &nbsp;·&nbsp; <button data-panel="settings"><b>S</b> settings</button> &nbsp;·&nbsp; <button data-panel="studio"><b>K</b> studio</button> &nbsp;·&nbsp; <button id="micBtn"><b>M</b> mic <span id="micState">off</span></button> &nbsp;·&nbsp; <b>F</b> fullscreen &nbsp;·&nbsp; <b>O</b> open</div>
+<div id="hud"><b>space</b> play &nbsp;·&nbsp; <b>← →</b> seek &nbsp;·&nbsp; <b>click bar</b> scrub &nbsp;·&nbsp; <b>I</b> inverts <span id="invState"></span> &nbsp;·&nbsp; <b>G</b> glow &nbsp;·&nbsp; <button data-panel="settings"><b>S</b> settings</button> &nbsp;·&nbsp; <button data-panel="studio"><b>K</b> studio</button> &nbsp;·&nbsp; <button id="micBtn"><b>M</b> mic <span id="micState">off</span></button> &nbsp;·&nbsp; <button id="libBtn"><b>L</b> library</button> &nbsp;·&nbsp; <b>F</b> fullscreen &nbsp;·&nbsp; <b>O</b> open</div>
 <div id="settings" class="panel" aria-label="Settings">
   <div class="p-head"><b>SETTINGS</b><span class="sp"></span><button class="ghost" id="seSave">save as default</button><button class="ghost" id="seReset">reset</button><button class="ghost" id="seFactory">factory</button><button class="ghost" data-panel="settings">close</button></div>
   <div id="seRows"></div>
@@ -217,7 +217,9 @@ async function load(file) {
   document.body.classList.add('loaded');
   // formats the browser can't play (ALAC m4a in Chrome, aiff, wma…) get transcoded to wav in-page
   let blob = file;
-  if (!(await playable(file))) {
+  // formats every browser plays skip the probe (it costs up to ~200 ms, which you feel when arrowing through a library)
+  const safe = /\.(mp3|wav|aac|ogg|oga|opus|flac|webm)$/i.test(file.name);
+  if (!safe && !(await playable(file))) {
     if (token !== loadToken) return;
     setStatus(`converting ${(file.name.match(/\.([^.]+)$/) || [, 'file'])[1]}…`);
     try { blob = await transcode(file); }
@@ -230,6 +232,9 @@ async function load(file) {
   audio.src = objURL;
   audio.play().catch(() => {});
   try {
+    // whole-song analysis waits a beat: holding an arrow key in the library shouldn't queue a decode per file
+    await new Promise(r => setTimeout(r, 180));
+    if (token !== loadToken) return;
     const ab = await ac.decodeAudioData(await blob.arrayBuffer());
     if (token !== loadToken) return;
     peaks = computePeaks(ab, 240);
@@ -1469,6 +1474,7 @@ const fileIn = $('#file');
 $('#pick').onclick = () => fileIn.click();
 $('#micPick').onclick = () => startMic();
 $('#micBtn').onclick = () => mic ? stopMic() : startMic();
+$('#libBtn').onclick = () => openLibrary();
 fileIn.onchange = () => { load(fileIn.files[0]); fileIn.value = ''; };
 
 let dragDepth = 0;
@@ -1542,6 +1548,7 @@ function onKey(e) {
   if (k === 's') { document.body.classList.contains('settings') ? togglePanel('settings', false) : openSettings(); return; }
   if (k === 'k') { togglePanel('studio'); return; }
   if (k === 'm') { mic ? stopMic() : startMic(); return; }
+  if (k === 'l') { openLibrary(); return; }
   const dig = /^Digit([0-6])$/.exec(e.code);
   if (kf.open && dig && mic) {
     const row = +dig[1], sv = e.shiftKey ? 0.5 : 1, now = performance.now() / 1000;
@@ -1624,7 +1631,36 @@ buildSettings();
 
 // Settings live in their own browser window (settings.html) that drives this page through this handle; top-level
 // const/let aren't window properties, so the popup needs it spelled out. Falls back to the in-page panel if blocked.
-window.beatscope = { S, SE_ROWS, setSetting, saveDefault, resetSettings, factorySettings, key: e => onKey(e) };
+// ---------- library (folder browser in its own window, Quick Look style) ----------
+// The file list lives here so it survives the popup closing; the popup just renders it and moves the selection.
+const AUDIO_EXT = /\.(mp3|m4a|aac|wav|aif|aiff|flac|ogg|oga|opus|webm|mp4|m4v|mov|mkv|caf|alac|wma)$/i;
+const lib = { items: [], idx: -1, folder: '' };
+function setLibrary(files, folder) {
+  // re-wrap in this window's realm so the files keep working after the popup that picked them closes
+  lib.items = [...files].filter(f => AUDIO_EXT.test(f.name) && !f.name.startsWith('._'))
+    .map(f => ({ file: new File([f], f.name, { type: f.type, lastModified: f.lastModified }), path: f.webkitRelativePath || f.name }))
+    .sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+  lib.folder = folder || (lib.items[0]?.path.split('/')[0] ?? '');
+  lib.idx = -1;
+  return lib.items.length;
+}
+function playIndex(i) {
+  if (!lib.items.length) return;
+  lib.idx = clamp(i, 0, lib.items.length - 1);
+  load(lib.items[lib.idx].file);
+}
+let libWin = null;
+function openLibrary() {
+  if (libWin && !libWin.closed) { libWin.focus(); return; }
+  const w = 380, h = Math.min(760, screen.availHeight - 40);
+  const left = Math.max(0, window.screenX - w - 8);
+  libWin = window.open('library.html', 'beatscope-library', `popup=yes,width=${w},height=${h},left=${left},top=${window.screenY + 40}`);
+  if (!libWin) { setStatus('allow popups to open the library'); setTimeout(() => setStatus(''), 1800); }
+}
+addEventListener('beforeunload', () => { if (libWin && !libWin.closed) libWin.close(); });
+
+window.beatscope = { S, SE_ROWS, setSetting, saveDefault, resetSettings, factorySettings, key: e => onKey(e),
+  lib, setLibrary, playIndex, isPlaying: () => !audio.paused, trackName: () => trackName };
 let setWin = null;
 function openSettings() {
   if (setWin && !setWin.closed) { setWin.focus(); return; }
