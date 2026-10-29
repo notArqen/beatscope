@@ -100,7 +100,7 @@
 <div id="empty">
   <h1>BEATSCOPE</h1>
   <div class="tag">Every hit. On the line.</div>
-  <div style="display:flex;gap:10px"><button id="pick">choose audio</button><button id="micPick" class="ghost" style="font-size:13px;padding:10px 20px">use mic</button></div>
+  <div style="display:flex;gap:10px"><button id="pick">choose audio</button><button id="libPick" class="ghost" style="font-size:13px;padding:10px 20px">browse folder</button><button id="micPick" class="ghost" style="font-size:13px;padding:10px 20px">use mic</button></div>
   <p>or drop a file anywhere</p>
 </div>
 <div id="drop"></div>
@@ -1475,6 +1475,7 @@ $('#pick').onclick = () => fileIn.click();
 $('#micPick').onclick = () => startMic();
 $('#micBtn').onclick = () => mic ? stopMic() : startMic();
 $('#libBtn').onclick = () => openLibrary();
+$('#libPick').onclick = () => openLibrary();
 fileIn.onchange = () => { load(fileIn.files[0]); fileIn.value = ''; };
 
 let dragDepth = 0;

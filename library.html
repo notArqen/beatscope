@@ -23,6 +23,15 @@
   @media (hover: hover) and (pointer: fine) { button:hover { background: rgba(255,255,255,0.16); } }
   button.big { font-size: 13px; padding: 10px 20px; background: var(--fg); color: #000; }
 
+  #searchRow { flex: none; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  body:not(.has) #searchRow { display: none; }
+  #q { width: 100%; font: inherit; font-size: 12px; color: var(--fg); background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; padding: 7px 10px; outline: none; transition: border-color 150ms var(--ease-out); }
+  #q:focus { border-color: rgba(255,255,255,0.28); }
+  #q::placeholder { color: var(--faint); }
+  .it mark { background: none; color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+  #none { display: none; padding: 24px 12px; color: var(--faint); text-align: center; }
+  body.nores #none { display: block; }
   #list { flex: 1; overflow-y: auto; outline: none; padding: 4px 0; }
   .it { display: grid; grid-template-columns: 26px 12px 1fr auto; gap: 6px; align-items: baseline; padding: 5px 12px; cursor: default;
     border-left: 2px solid transparent; }
@@ -51,8 +60,10 @@
   <button class="big" id="choose2">choose folder</button>
   <div>Everything playable inside it, subfolders included.<br>↑ ↓ to browse — whatever's selected plays.</div>
 </div>
+<div id="searchRow"><input id="q" type="search" placeholder="search…" autocomplete="off" spellcheck="false"></div>
+<div id="none">no matches</div>
 <div id="list" tabindex="0"></div>
-<div id="foot">↑ ↓ browse · enter restart · space play · ← → seek · L / esc close</div>
+<div id="foot">type to search · ↑ ↓ browse · enter play · space / ← → when search is empty · esc clear / close</div>
 <div id="gone">The beatscope window this belongs to is gone.<br>Open the library again from beatscope (press L).</div>
 <input type="file" id="pick" webkitdirectory multiple hidden>
 <script>
@@ -63,21 +74,40 @@ const list = document.getElementById('list'), pick = document.getElementById('pi
 const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const size = b => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
 
+// search: every word must appear somewhere in the subfolder path or name (case/accent-insensitive)
+const q = document.getElementById('q');
+const fold = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+let view = [];   // library indices currently listed, in order
+function highlight(text, words) {
+  if (!words.length) return esc(text);
+  const f = fold(text), hit = new Uint8Array(text.length);
+  for (const w of words) { let at = f.indexOf(w); while (at >= 0) { hit.fill(1, at, at + w.length); at = f.indexOf(w, at + w.length); } }
+  let out = '', open = false;
+  for (let c = 0; c < text.length; c++) {
+    if (hit[c] && !open) { out += '<mark>'; open = true; } else if (!hit[c] && open) { out += '</mark>'; open = false; }
+    out += esc(text[c]);
+  }
+  return out + (open ? '</mark>' : '');
+}
 function render() {
   const h = host();
   if (!h) { document.body.classList.add('orphan'); return; }
-  const { items, folder } = h.lib;
+  const { items, folder } = h.lib, words = fold(q.value).split(/\s+/).filter(Boolean);
+  view = [];
+  items.forEach((it, i) => { const p = fold(it.path); if (words.every(w => p.includes(w))) view.push(i); });
   document.body.classList.toggle('has', items.length > 0);
-  document.getElementById('folder').textContent = items.length ? `${folder} · ${items.length}` : '';
-  list.innerHTML = items.map((it, i) => {
-    const parts = it.path.split('/'), file = parts.pop(), sub = parts.slice(1).join('/');
+  document.body.classList.toggle('nores', items.length > 0 && !view.length);
+  document.getElementById('folder').textContent = !items.length ? '' : words.length ? `${folder} · ${view.length} / ${items.length}` : `${folder} · ${items.length}`;
+  list.innerHTML = view.map(i => {
+    const it = items[i], parts = it.path.split('/'), file = parts.pop(), sub = parts.slice(1).join('/');
     const ext = (file.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
     const base = file.replace(/\.[^.]+$/, '');
     return `<div class="it" data-i="${i}"><span class="n">${i + 1}</span><span class="play">▶</span>`
-      + `<span class="name">${sub ? `<i>${esc(sub)}/</i>` : ''}${esc(base)}</span><span class="meta">${ext} · ${size(it.file.size)}</span></div>`;
+      + `<span class="name">${sub ? `<i>${highlight(sub + '/', words)}</i>` : ''}${highlight(base, words)}</span><span class="meta">${ext} · ${size(it.file.size)}</span></div>`;
   }).join('');
-  mark();
+  shown = -2; mark();
 }
+q.addEventListener('input', render);
 
 let shown = -2, shownPlaying = null;
 function mark() {
@@ -108,21 +138,28 @@ pick.onchange = () => {
   pick.value = '';
   render();
   if (n) go(0);
-  list.focus();
+  q.value = ''; render(); q.focus();
 };
 
-list.addEventListener('click', e => { const it = e.target.closest('.it'); if (it) go(+it.dataset.i); });
+list.addEventListener('click', e => { const it = e.target.closest('.it'); if (it) { go(+it.dataset.i); q.focus(); } });
 
+// keys move through the *filtered* list; the search box keeps focus so typing just searches
 addEventListener('keydown', e => {
   const h = host(), k = e.key;
-  if (!h || e.metaKey || e.ctrlKey) return;
-  const i = h.lib.idx, n = h.lib.items.length;
+  if (!h) return;
+  if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'f') { e.preventDefault(); q.focus(); q.select(); return; }
+  if (e.metaKey || e.ctrlKey) return;
+  const n = view.length, pos = view.indexOf(h.lib.idx);
   const page = Math.max(1, Math.floor(list.clientHeight / 26) - 1);
-  const moves = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: n - 1, PageDown: i + page, PageUp: i - page };
-  if (k in moves && n) { e.preventDefault(); go(i < 0 && k === 'ArrowDown' ? 0 : moves[k]); return; }
-  if (k === 'Enter' && i >= 0) { e.preventDefault(); go(i); return; }
-  if (k === 'Escape' || k.toLowerCase() === 'l') { window.close(); return; }
-  // everything else (space, ← →, I, K, M, F, S…) drives the player
+  const moves = { ArrowDown: pos < 0 ? 0 : pos + 1, ArrowUp: pos < 0 ? 0 : pos - 1, PageDown: pos + page, PageUp: Math.max(0, pos - page) };
+  if (e.target !== q) Object.assign(moves, { Home: 0, End: n - 1 });
+  if (k in moves) { e.preventDefault(); if (n) go(view[Math.max(0, Math.min(n - 1, moves[k]))]); return; }
+  if (k === 'Enter') { e.preventDefault(); if (n) go(pos >= 0 ? view[pos] : view[0]); return; }
+  if (k === 'Escape') { e.preventDefault(); if (q.value) { q.value = ''; render(); } else window.close(); return; }
+  const typing = e.target === q && q.value !== '';
+  if (e.target === q && !(k === ' ' || k === 'ArrowLeft' || k === 'ArrowRight') ) return;   // letters go into the search
+  if (typing) return;
+  // empty search: space / ← → (and anything pressed outside the box) drive the player
   if (k === ' ') e.preventDefault();
   h.key({ key: k, code: e.code, shiftKey: e.shiftKey, metaKey: false, ctrlKey: false, target: document.body, preventDefault() {} });
 });
@@ -130,7 +167,7 @@ document.addEventListener('click', e => { const b = e.target.closest('button'); 
 
 render();
 setInterval(mark, 250);
-list.focus();
+(document.body.classList.contains('has') ? q : list).focus();
 </script>
 </body>
 </html>
